@@ -196,16 +196,18 @@ else
     print_success "Docker installed successfully!"
     print_warning "NOTE: You may need to log out and back in for group permissions."
     print_warning "If you see permission errors, log out, log back in, and re-run this script."
-    print_info "Attempting to activate docker group without logout..."
-    # Try to activate group in current session
-    exec sg docker "$0" "$@" 2>/dev/null || true
 fi
 
-# Use sudo for docker if group not yet active
+# Use sudo for docker if group not yet active in this session
 if ! docker ps &>/dev/null 2>&1; then
-    print_warning "Docker group not active yet in this session — using sudo for docker commands."
-    shopt -s expand_aliases 2>/dev/null || true
-    alias docker='sudo docker'
+    if sudo docker ps &>/dev/null 2>&1; then
+        print_warning "Docker group not active yet — using sudo for this session."
+        function docker() { sudo docker "$@"; }
+        export -f docker 2>/dev/null || true
+    else
+        print_error "Docker is not responding. Try rebooting and running this script again."
+        exit 1
+    fi
 fi
 
 # Verify Docker Compose is available

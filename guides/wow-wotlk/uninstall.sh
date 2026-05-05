@@ -262,7 +262,7 @@ docker network rm dads_mmo_network 2>/dev/null || true
 print_step "STEP 4/4 — Removing Server Files"
 
 if [ -d "$INSTALL_DIR" ]; then
-    rm -rf "$INSTALL_DIR"
+    sudo rm -rf "$INSTALL_DIR"
     print_success "Removed server folder: $INSTALL_DIR"
 else
     print_info "Server folder not found — already removed"

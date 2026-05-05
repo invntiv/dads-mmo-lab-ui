@@ -196,9 +196,65 @@ At the login screen use the username and password you created in Step 7.
 
 ---
 
-## 🔄 Starting and Stopping the Server
+## 🎮 BONUS — Play Entirely from Gaming Mode
 
-Every time you want to play you need to start the server first.
+Once everything is set up and working, you can make the whole experience feel like a proper game — no more switching to Desktop Mode every time you want to play.
+
+**This is how it works:**
+1. Launch "WoW Server" from your Steam library in Gaming Mode
+2. It starts the server automatically and tells you when it's ready
+3. Press the Steam button, launch WoW from your library
+4. Play your session
+5. Close WoW, go back to the server launcher
+6. Press **A** (or Enter on keyboard) to shut down safely
+
+Start to playing: **under 1 minute.**
+Exit: **about 20 seconds.**
+
+---
+
+### Step 1 — Download the Gaming Mode Script
+
+1. On your Steam Deck in Desktop Mode open the browser
+2. Go to: `https://github.com/DadsMmoLab/dads-mmo-lab/tree/main/guides/wow-wotlk`
+3. Download `wow-gaming-mode.sh`
+4. Save it to your **home folder** (`/home/deck/`)
+
+### Step 2 — Make it Executable
+
+Open Konsole and run:
+
+```bash
+chmod +x ~/wow-gaming-mode.sh
+```
+
+### Step 3 — Add to Steam
+
+1. Open **Steam** in Desktop Mode
+2. Click **Games** → **Add a Non-Steam Game**
+3. Click **Browse** and navigate to your home folder
+4. Select `wow-gaming-mode.sh`
+5. Click **Add Selected Programs**
+
+### Step 4 — Set the Launch Options
+
+1. Find the new entry in your Steam library
+2. Right-click → **Properties**
+3. Change the **name** to: `WoW Server`
+4. Leave the **Launch Options** field **blank**
+5. Under **Compatibility** → check **Force the use of a specific Steam Play compatibility tool** → select **Proton Experimental**
+
+> 💡 You can also set a custom icon and cover art to make it look great in your library!
+
+### Step 5 — That's It!
+
+Switch back to Gaming Mode. You'll see **WoW Server** in your library alongside your other games. Launch it, wait for the ready message, then launch WoW. Everything runs from Gaming Mode — no Desktop Mode needed ever again.
+
+---
+
+## 🔄 Starting and Stopping the Server (Desktop Mode Method)
+
+If you prefer using Desktop Mode or need to start/stop manually:
 
 **Starting the server:**
 1. Go to Desktop Mode

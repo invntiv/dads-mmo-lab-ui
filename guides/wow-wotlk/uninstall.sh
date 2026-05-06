@@ -25,6 +25,8 @@
 # ============================================================
 
 # ─────────────────────────────────────────
+INSTALLER_VERSION="1.2.0"
+
 # COLORS
 # ─────────────────────────────────────────
 RED='\033[0;31m'
@@ -42,6 +44,7 @@ print_header() {
     echo -e "${RED}║${WHITE}${BOLD}         ⚙️  DAD'S MMO LAB                        ${NC}${RED}║${NC}"
     echo -e "${RED}║${WHITE}         WoW Server — UNINSTALLER                 ${NC}${RED}║${NC}"
     echo -e "${RED}║${BLUE}         github.com/DadsMmoLab/dads-mmo-lab       ${NC}${RED}║${NC}"
+    echo -e "${RED}║${YELLOW}         Version ${INSTALLER_VERSION}                              ${NC}${RED}║${NC}"
     echo -e "${RED}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -72,6 +75,7 @@ ask_yes_no() {
 
 INSTALL_DIR="$HOME/wow-server"
 NPCBOTS_DIR="$HOME/wow-server-npcbots"
+PLAYERBOTS_DIR="$HOME/wow-server-playerbots"
 
 # ─────────────────────────────────────────
 # DOCKER CHECK
@@ -103,52 +107,81 @@ echo ""
 # Detect which servers are installed
 STANDARD_EXISTS=false
 NPCBOTS_EXISTS=false
+PLAYERBOTS_EXISTS=false
 
-[ -d "$INSTALL_DIR" ] && STANDARD_EXISTS=true
-[ -d "$NPCBOTS_DIR" ] && NPCBOTS_EXISTS=true
+[ -d "$INSTALL_DIR" ]      && STANDARD_EXISTS=true
+[ -d "$NPCBOTS_DIR" ]      && NPCBOTS_EXISTS=true
+[ -d "$PLAYERBOTS_DIR" ]   && PLAYERBOTS_EXISTS=true
 
-if [ "$STANDARD_EXISTS" = true ] && [ "$NPCBOTS_EXISTS" = true ]; then
-    echo -e "  ${CYAN}1)${NC} Standard WoW Server ($INSTALL_DIR)"
-    echo -e "  ${CYAN}2)${NC} NPCBots WoW Server ($NPCBOTS_DIR)"
-    echo -e "  ${CYAN}3)${NC} BOTH servers"
-    echo ""
-    echo -e "${WHITE}Choice (1-3): ${NC}"
-    read -r SERVER_CHOICE
-elif [ "$STANDARD_EXISTS" = true ]; then
-    echo -e "  ${CYAN}1)${NC} Standard WoW Server ($INSTALL_DIR)"
-    echo ""
-    SERVER_CHOICE="1"
-    print_info "Only Standard WoW Server found."
-elif [ "$NPCBOTS_EXISTS" = true ]; then
-    echo -e "  ${CYAN}2)${NC} NPCBots WoW Server ($NPCBOTS_DIR)"
-    echo ""
-    SERVER_CHOICE="2"
-    print_info "Only NPCBots Server found."
-else
+# Build menu dynamically based on what's installed
+MENU_OPTIONS=()
+[ "$STANDARD_EXISTS" = true ]   && MENU_OPTIONS+=("Standard WoW ($INSTALL_DIR)")
+[ "$NPCBOTS_EXISTS" = true ]    && MENU_OPTIONS+=("NPCBots WoW ($NPCBOTS_DIR)")
+[ "$PLAYERBOTS_EXISTS" = true ] && MENU_OPTIONS+=("Playerbots WoW ($PLAYERBOTS_DIR)")
+
+if [ ${#MENU_OPTIONS[@]} -eq 0 ]; then
     print_error "No server installations found!"
-    print_info "Looked for: $INSTALL_DIR and $NPCBOTS_DIR"
+    print_info "Looked for:"
+    print_info "  $INSTALL_DIR"
+    print_info "  $NPCBOTS_DIR"
+    print_info "  $PLAYERBOTS_DIR"
     exit 1
 fi
 
-# Set target dirs based on choice
-case "$SERVER_CHOICE" in
-    1)
-        TARGET_DIRS=("$INSTALL_DIR")
-        TARGET_NAMES=("Standard WoW")
-        ;;
-    2)
-        TARGET_DIRS=("$NPCBOTS_DIR")
-        TARGET_NAMES=("NPCBots WoW")
-        ;;
-    3)
-        TARGET_DIRS=("$INSTALL_DIR" "$NPCBOTS_DIR")
-        TARGET_NAMES=("Standard WoW" "NPCBots WoW")
-        ;;
-    *)
-        print_error "Invalid choice."
-        exit 1
-        ;;
-esac
+# Show available options
+OPTION_NUM=1
+for opt in "${MENU_OPTIONS[@]}"; do
+    echo -e "  ${CYAN}${OPTION_NUM})${NC} $opt"
+    OPTION_NUM=$((OPTION_NUM + 1))
+done
+
+# Only show ALL option if more than one server installed
+INSTALLED_COUNT=${#MENU_OPTIONS[@]}
+if [ $INSTALLED_COUNT -gt 1 ]; then
+    echo -e "  ${CYAN}${OPTION_NUM})${NC} ALL servers"
+fi
+
+echo ""
+echo -e "${WHITE}Choice (1-${OPTION_NUM}): ${NC}"
+read -r SERVER_CHOICE
+
+# Map choice to target dirs and names
+TARGET_DIRS=()
+TARGET_NAMES=()
+
+if [ $INSTALLED_COUNT -eq 1 ]; then
+    # Only one server — use it regardless of input
+    [ "$STANDARD_EXISTS" = true ]   && TARGET_DIRS=("$INSTALL_DIR")   && TARGET_NAMES=("Standard WoW")
+    [ "$NPCBOTS_EXISTS" = true ]    && TARGET_DIRS=("$NPCBOTS_DIR")   && TARGET_NAMES=("NPCBots WoW")
+    [ "$PLAYERBOTS_EXISTS" = true ] && TARGET_DIRS=("$PLAYERBOTS_DIR") && TARGET_NAMES=("Playerbots WoW")
+    SERVER_CHOICE="1"
+else
+    # Multiple servers — map number to correct dir
+    COUNTER=1
+    declare -A CHOICE_MAP
+    [ "$STANDARD_EXISTS" = true ]   && CHOICE_MAP[$COUNTER]="standard"   && COUNTER=$((COUNTER + 1))
+    [ "$NPCBOTS_EXISTS" = true ]    && CHOICE_MAP[$COUNTER]="npcbots"    && COUNTER=$((COUNTER + 1))
+    [ "$PLAYERBOTS_EXISTS" = true ] && CHOICE_MAP[$COUNTER]="playerbots" && COUNTER=$((COUNTER + 1))
+    ALL_CHOICE=$COUNTER
+
+    if [ "$SERVER_CHOICE" = "$ALL_CHOICE" ]; then
+        # ALL selected
+        [ "$STANDARD_EXISTS" = true ]   && TARGET_DIRS+=("$INSTALL_DIR")    && TARGET_NAMES+=("Standard WoW")
+        [ "$NPCBOTS_EXISTS" = true ]    && TARGET_DIRS+=("$NPCBOTS_DIR")    && TARGET_NAMES+=("NPCBots WoW")
+        [ "$PLAYERBOTS_EXISTS" = true ] && TARGET_DIRS+=("$PLAYERBOTS_DIR") && TARGET_NAMES+=("Playerbots WoW")
+    else
+        SELECTED="${CHOICE_MAP[$SERVER_CHOICE]}"
+        case "$SELECTED" in
+            standard)   TARGET_DIRS=("$INSTALL_DIR")    TARGET_NAMES=("Standard WoW") ;;
+            npcbots)    TARGET_DIRS=("$NPCBOTS_DIR")    TARGET_NAMES=("NPCBots WoW") ;;
+            playerbots) TARGET_DIRS=("$PLAYERBOTS_DIR") TARGET_NAMES=("Playerbots WoW") ;;
+            *)
+                print_error "Invalid choice."
+                exit 1
+                ;;
+        esac
+    fi
+fi
 
 echo ""
 echo -e "${WHITE}Selected: ${CYAN}${TARGET_NAMES[*]}${NC}"
@@ -251,34 +284,31 @@ if [ "$confirm" != "DELETE" ]; then
 fi
 
 echo ""
+echo ""
 print_info "Uninstalling... this will take about 30-60 seconds."
 
 # ─────────────────────────────────────────
 # STEP 1 — STOP AND REMOVE CONTAINERS
 # ─────────────────────────────────────────
-print_step "STEP 1/4 — Stopping Server"
+print_step "STEP 1/4 — Stopping Server(s)"
 
 for i in "${!TARGET_DIRS[@]}"; do
-    TARGET_DIR="${TARGET_DIRS[$i]}"
-    TARGET_NAME="${TARGET_NAMES[$i]}"
-
-    print_info "Stopping $TARGET_NAME..."
-
-    if [ -f "$TARGET_DIR/docker-compose.yml" ]; then
-        cd "$TARGET_DIR"
+    dir="${TARGET_DIRS[$i]}"
+    name="${TARGET_NAMES[$i]}"
+    print_info "Stopping $name..."
+    if [ -f "$dir/docker-compose.yml" ]; then
+        cd "$dir"
         docker compose down --remove-orphans 2>/dev/null || \
         sudo docker compose down --remove-orphans 2>/dev/null || true
-        print_success "$TARGET_NAME stopped and containers removed"
+        print_success "$name stopped"
     fi
 done
 
-# Also remove any stray AzerothCore containers regardless of naming
-print_info "Cleaning up any orphaned containers..."
-docker ps -a --format '{{.Names}}' | grep -iE "worldserver|authserver|ac-database|ac-eluna|ac-client" | \
-    xargs -r docker rm -f 2>/dev/null || \
-sudo docker ps -a --format '{{.Names}}' | grep -iE "worldserver|authserver|ac-database|ac-eluna|ac-client" | \
-    xargs -r sudo docker rm -f 2>/dev/null || true
-print_success "Orphaned containers cleaned up"
+print_info "Cleaning up orphaned containers..."
+docker ps -a --format '{{.Names}}' 2>/dev/null | \
+    grep -iE "worldserver|authserver|ac-database|ac-eluna|ac-client|ac-db" | \
+    xargs -r docker rm -f 2>/dev/null || true
+print_success "Containers cleaned up"
 
 # ─────────────────────────────────────────
 # STEP 2 — REMOVE DOCKER IMAGES
@@ -286,55 +316,87 @@ print_success "Orphaned containers cleaned up"
 print_step "STEP 2/4 — Removing Docker Images"
 
 IMAGES=(
-    "acore/ac-worldserver"
-    "acore/ac-authserver"
-    "acore/ac-db-import"
     "acore/ac-wotlk-worldserver"
     "acore/ac-wotlk-authserver"
     "acore/ac-wotlk-db-import"
     "acore/ac-wotlk-client-data"
+    "acore/ac-worldserver"
+    "acore/ac-authserver"
+    "acore/ac-db-import"
+    "acore/eluna-ts"
     "mysql:8.0"
     "mysql:8.4"
 )
 
 for image in "${IMAGES[@]}"; do
-    if docker images | grep -q "${image%%:*}"; then
+    if docker images 2>/dev/null | grep -q "${image%%:*}"; then
         docker rmi "$image" 2>/dev/null || true
         print_success "Removed image: $image"
     fi
 done
 
-# Remove any dangling images
 docker image prune -f 2>/dev/null || true
 print_success "Cleaned up unused images"
 
 # ─────────────────────────────────────────
-# STEP 3 — REMOVE DOCKER VOLUME
+# STEP 3 — REMOVE DOCKER VOLUMES
 # ─────────────────────────────────────────
-print_step "STEP 3/4 — Removing Database Volume"
+print_step "STEP 3/4 — Removing Database Volumes"
 
-if docker volume ls | grep -q "dads_mmo_wow_db"; then
-    docker volume rm dads_mmo_wow_db 2>/dev/null || true
-    print_success "Removed database volume"
-else
-    # Try generic volume name as fallback
-    docker volume rm wow-server_ac-database 2>/dev/null || true
-    print_success "Removed database volume"
-fi
+VOLUMES=(
+    "dads_mmo_wow_db"
+    "wow-server_ac-database"
+    "wow-server_ac-client-data"
+    "wow-server-npcbots_ac-database"
+    "wow-server-npcbots_ac-client-data"
+    "wow-server-playerbots_ac-database"
+    "wow-server-playerbots_ac-client-data"
+    "ac-database"
+    "ac-client-data"
+)
 
-# Remove the docker network
-docker network rm dads_mmo_network 2>/dev/null || true
+for vol in "${VOLUMES[@]}"; do
+    if docker volume ls 2>/dev/null | grep -q "$vol"; then
+        docker volume rm "$vol" 2>/dev/null || true
+        print_success "Removed volume: $vol"
+    fi
+done
+
+docker network rm dads_mmo_network wow-server_ac-network \
+    wow-server_default wow-server-npcbots_ac-network \
+    wow-server-npcbots_default wow-server-playerbots_ac-network \
+    wow-server-playerbots_default 2>/dev/null || true
 
 # ─────────────────────────────────────────
-# STEP 4 — REMOVE SERVER FOLDER
+# STEP 4 — REMOVE SERVER FOLDERS
 # ─────────────────────────────────────────
 print_step "STEP 4/4 — Removing Server Files"
 
-if [ -d "$INSTALL_DIR" ]; then
-    sudo rm -rf "$INSTALL_DIR"
-    print_success "Removed server folder: $INSTALL_DIR"
-else
-    print_info "Server folder not found — already removed"
+for i in "${!TARGET_DIRS[@]}"; do
+    dir="${TARGET_DIRS[$i]}"
+    name="${TARGET_NAMES[$i]}"
+    if [ -d "$dir" ]; then
+        sudo rm -rf "$dir"
+        print_success "Removed $name folder: $dir"
+    else
+        print_info "$name folder not found — already removed"
+    fi
+done
+
+if [[ " ${TARGET_NAMES[*]} " =~ "Standard WoW" ]]; then
+    [ -f "$HOME/wow-gaming-mode.sh" ] && \
+        rm -f "$HOME/wow-gaming-mode.sh" && \
+        print_success "Removed gaming mode launcher"
+fi
+if [[ " ${TARGET_NAMES[*]} " =~ "NPCBots WoW" ]]; then
+    [ -f "$HOME/wow-npcbots-launcher.sh" ] && \
+        rm -f "$HOME/wow-npcbots-launcher.sh" && \
+        print_success "Removed NPCBots launcher"
+fi
+if [[ " ${TARGET_NAMES[*]} " =~ "Playerbots WoW" ]]; then
+    [ -f "$HOME/wow-playerbots-launcher.sh" ] && \
+        rm -f "$HOME/wow-playerbots-launcher.sh" && \
+        print_success "Removed Playerbots launcher"
 fi
 
 # ─────────────────────────────────────────
@@ -345,20 +407,22 @@ echo -e "${GREEN}${BOLD}╔═════════════════�
 echo -e "${GREEN}${BOLD}║   ✅ UNINSTALL COMPLETE                           ║${NC}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${WHITE}Your WoW server has been completely removed.${NC}"
+echo -e "${WHITE}Removed: ${CYAN}${TARGET_NAMES[*]}${NC}"
 echo -e "${WHITE}Your WoW client files are untouched.${NC}"
 echo ""
 
 if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
     echo -e "${CYAN}Your backup is saved at:${NC}"
     echo -e "  ${CYAN}$BACKUP_DIR/full_server_backup.sql${NC}"
-    echo -e "${CYAN}To restore it later, reinstall the server then run:${NC}"
-    echo -e "  ${CYAN}docker exec -i acore-docker-ac-database-1 mysql -uroot -ppassword < full_server_backup.sql${NC}"
+    echo -e "${CYAN}To restore after reinstalling:${NC}"
+    echo -e "  ${CYAN}docker exec -i <db-container> mysql -uroot -ppassword < full_server_backup.sql${NC}"
     echo ""
 fi
 
-echo -e "${WHITE}Want to reinstall from scratch? Just run:${NC}"
-echo -e "  ${CYAN}chmod +x install.sh && ./install.sh${NC}"
+echo -e "${WHITE}Want to reinstall? Run:${NC}"
+echo -e "  ${CYAN}Wizard (recommended): chmod +x install-wow.sh && ./install-wow.sh${NC}"
+echo -e "  ${CYAN}Standard WoW:         chmod +x install.sh && ./install.sh${NC}"
+echo -e "  ${CYAN}NPCBots WoW:          chmod +x install-npcbots.sh && ./install-npcbots.sh${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${WHITE}  📺 youtube.com/@DadsMmoLab${NC}"

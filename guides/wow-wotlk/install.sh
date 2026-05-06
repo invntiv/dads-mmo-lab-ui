@@ -557,46 +557,86 @@ fi
 print_step "STEP 7/8 — Creating Your Account"
 
 echo ""
-echo -e "${WHITE}Let's create your in-game account.${NC}"
-echo ""
 
-while true; do
-    echo -e "${WHITE}Enter your desired username: ${NC}"
-    read -r WOW_USERNAME
-    if [ -n "$WOW_USERNAME" ]; then
-        break
-    fi
-    echo "Username cannot be empty."
-done
-
-while true; do
-    echo -e "${WHITE}Enter your desired password: ${NC}"
-    read -rs WOW_PASSWORD
-    echo ""
-    if [ -n "$WOW_PASSWORD" ]; then
-        break
-    fi
-    echo "Password cannot be empty."
-done
-
-# Wait to ensure DB is fully ready before trying to create account
-print_info "Waiting for database to be ready..."
+# Wait for DB to be ready
 sleep 10
 
-# Detect container name — acore-docker uses different naming
+# Detect DB container
 DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -iE "ac.database|ac_database" | head -1)
 if [ -z "$DB_CONTAINER" ]; then
     DB_CONTAINER="wow-server-ac-database-1"
 fi
-print_info "Using database container: $DB_CONTAINER"
 
-# Hash the password the way AzerothCore expects (SHA1 of USER:PASS uppercase)
-WOW_USERNAME_UPPER=$(echo "$WOW_USERNAME" | tr '[:lower:]' '[:upper:]')
-WOW_PASSWORD_UPPER=$(echo "$WOW_PASSWORD" | tr '[:lower:]' '[:upper:]')
+# ── Create default admin account automatically ──
+print_info "Creating default admin account..."
 
-if command -v sha1sum &>/dev/null; then
-    WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | sha1sum | awk '{print toupper($1)}')
-elif command -v shasum &>/dev/null; then
+ADMIN_UPPER="ADMIN"
+ADMIN_HASH=$(echo -n "ADMIN:ADMIN" | sha1sum | awk '{print toupper($1)}' 2>/dev/null || \
+             echo -n "ADMIN:ADMIN" | shasum -a 1 | awk '{print toupper($1)}' 2>/dev/null || \
+             echo "")
+
+if [ -n "$ADMIN_HASH" ]; then
+    docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
+        INSERT INTO account (username, sha_pass_hash, reg_mail, email, joindate)
+        VALUES ('ADMIN', '${ADMIN_HASH}', 'admin@local.lan', 'admin@local.lan', NOW())
+        ON DUPLICATE KEY UPDATE sha_pass_hash='${ADMIN_HASH}';
+    " 2>/dev/null || true
+
+    ADMIN_ID=$(docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -sNe \
+        "SELECT id FROM account WHERE username='ADMIN';" 2>/dev/null)
+
+    if [ -n "$ADMIN_ID" ]; then
+        docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
+            INSERT INTO account_access (id, gmlevel, RealmID)
+            VALUES ('${ADMIN_ID}', 3, -1)
+            ON DUPLICATE KEY UPDATE gmlevel=3;
+        " 2>/dev/null || true
+        print_success "Default account created!"
+        print_info "  Username: admin"
+        print_info "  Password: admin"
+        print_info "  GM Level: 3 (full admin)"
+    fi
+else
+    print_warning "Could not auto-create admin account — create it manually:"
+    print_info "  docker attach $WORLD_CONTAINER"
+    print_info "  account create admin admin admin"
+    print_info "  account set gmlevel admin 3 -1"
+fi
+
+echo ""
+echo -e "${WHITE}Want to create an additional custom account? (y/n): ${NC}"
+read -r CREATE_CUSTOM
+if [[ "$CREATE_CUSTOM" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo -e "${WHITE}Let's create your custom account.${NC}"
+    echo ""
+
+    while true; do
+        echo -e "${WHITE}Enter your desired username: ${NC}"
+        read -r WOW_USERNAME
+        if [ -n "$WOW_USERNAME" ]; then
+            break
+        fi
+        echo "Username cannot be empty."
+    done
+
+    while true; do
+        echo -e "${WHITE}Enter your desired password: ${NC}"
+        read -rs WOW_PASSWORD
+        echo ""
+        if [ -n "$WOW_PASSWORD" ]; then
+            break
+        fi
+        echo "Password cannot be empty."
+    done
+
+    # Hash the password
+    WOW_USERNAME_UPPER=$(echo "$WOW_USERNAME" | tr '[:lower:]' '[:upper:]')
+    WOW_PASSWORD_UPPER=$(echo "$WOW_PASSWORD" | tr '[:lower:]' '[:upper:]')
+
+    if command -v sha1sum &>/dev/null; then
+        WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | sha1sum | awk '{print toupper($1)}')
+    elif command -v shasum &>/dev/null; then
     WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | shasum -a 1 | awk '{print toupper($1)}')
 else
     print_warning "sha1sum not found — account creation may need to be done manually."
@@ -650,18 +690,24 @@ cat > "$INSTALL_DIR/MY_ACCOUNT.txt" << CREDS
 ====================================
   Your WoW Server Login Details
 ====================================
-Username: $WOW_USERNAME
-Password: $WOW_PASSWORD
+
+DEFAULT ACCOUNT (always created):
+  Username: admin
+  Password: admin
+  GM Level: 3 (full admin)
+
+CUSTOM ACCOUNT (if you created one):
+  Username: $WOW_USERNAME
+  Password: $WOW_PASSWORD
 
 Server: 127.0.0.1 (localhost)
 Realm:  Your realm (shown in login screen)
 
 GM Commands (use in-game chat):
-  .npcbot add <class>   - Add a bot companion
-  .npcbot remove        - Remove a bot
   .levelup              - Level up your character
   .modify speed 3       - Move faster (optional)
   .tele <location>      - Teleport anywhere
+  .commands             - See all GM commands
 
 ====================================
   Useful Server Commands

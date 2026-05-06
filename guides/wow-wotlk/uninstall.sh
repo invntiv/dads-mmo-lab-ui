@@ -71,6 +71,7 @@ ask_yes_no() {
 }
 
 INSTALL_DIR="$HOME/wow-server"
+NPCBOTS_DIR="$HOME/wow-server-npcbots"
 
 # ─────────────────────────────────────────
 # DOCKER CHECK
@@ -93,12 +94,71 @@ fi
 clear
 print_header
 
-echo -e "${WHITE}This will completely remove your WoW offline server.${NC}"
+# ─────────────────────────────────────────
+# SERVER SELECTION
+# ─────────────────────────────────────────
+echo -e "${WHITE}${BOLD}Which server do you want to uninstall?${NC}"
+echo ""
+
+# Detect which servers are installed
+STANDARD_EXISTS=false
+NPCBOTS_EXISTS=false
+
+[ -d "$INSTALL_DIR" ] && STANDARD_EXISTS=true
+[ -d "$NPCBOTS_DIR" ] && NPCBOTS_EXISTS=true
+
+if [ "$STANDARD_EXISTS" = true ] && [ "$NPCBOTS_EXISTS" = true ]; then
+    echo -e "  ${CYAN}1)${NC} Standard WoW Server ($INSTALL_DIR)"
+    echo -e "  ${CYAN}2)${NC} NPCBots WoW Server ($NPCBOTS_DIR)"
+    echo -e "  ${CYAN}3)${NC} BOTH servers"
+    echo ""
+    echo -e "${WHITE}Choice (1-3): ${NC}"
+    read -r SERVER_CHOICE
+elif [ "$STANDARD_EXISTS" = true ]; then
+    echo -e "  ${CYAN}1)${NC} Standard WoW Server ($INSTALL_DIR)"
+    echo ""
+    SERVER_CHOICE="1"
+    print_info "Only Standard WoW Server found."
+elif [ "$NPCBOTS_EXISTS" = true ]; then
+    echo -e "  ${CYAN}2)${NC} NPCBots WoW Server ($NPCBOTS_DIR)"
+    echo ""
+    SERVER_CHOICE="2"
+    print_info "Only NPCBots Server found."
+else
+    print_error "No server installations found!"
+    print_info "Looked for: $INSTALL_DIR and $NPCBOTS_DIR"
+    exit 1
+fi
+
+# Set target dirs based on choice
+case "$SERVER_CHOICE" in
+    1)
+        TARGET_DIRS=("$INSTALL_DIR")
+        TARGET_NAMES=("Standard WoW")
+        ;;
+    2)
+        TARGET_DIRS=("$NPCBOTS_DIR")
+        TARGET_NAMES=("NPCBots WoW")
+        ;;
+    3)
+        TARGET_DIRS=("$INSTALL_DIR" "$NPCBOTS_DIR")
+        TARGET_NAMES=("Standard WoW" "NPCBots WoW")
+        ;;
+    *)
+        print_error "Invalid choice."
+        exit 1
+        ;;
+esac
+
+echo ""
+echo -e "${WHITE}Selected: ${CYAN}${TARGET_NAMES[*]}${NC}"
 echo ""
 echo -e "${YELLOW}This includes:${NC}"
 echo -e "  • All server containers (worldserver, authserver, database)"
 echo -e "  • All downloaded Docker images for the server"
-echo -e "  • Your server folder: ${CYAN}$INSTALL_DIR${NC}"
+for dir in "${TARGET_DIRS[@]}"; do
+    echo -e "  • Server folder: ${CYAN}$dir${NC}"
+done
 echo -e "  • ${RED}All character data and progress${NC}"
 echo ""
 echo -e "${GREEN}This does NOT touch:${NC}"
@@ -198,23 +258,27 @@ print_info "Uninstalling... this will take about 30-60 seconds."
 # ─────────────────────────────────────────
 print_step "STEP 1/4 — Stopping Server"
 
-if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-    cd "$INSTALL_DIR"
-    docker compose down --remove-orphans 2>/dev/null || \
-    sudo docker compose down --remove-orphans 2>/dev/null || true
-    print_success "Server stopped and containers removed"
-else
-    # Try to stop containers directly if compose file is missing
-    for container in acore-docker-ac-worldserver-1 acore-docker-ac-authserver-1 acore-docker-ac-database-1; do
-        if docker ps -a 2>/dev/null | grep -q "$container"; then
-            docker stop "$container" 2>/dev/null || \
-            sudo docker stop "$container" 2>/dev/null || true
-            docker rm "$container" 2>/dev/null || \
-            sudo docker rm "$container" 2>/dev/null || true
-            print_success "Removed container: $container"
-        fi
-    done
-fi
+for i in "${!TARGET_DIRS[@]}"; do
+    TARGET_DIR="${TARGET_DIRS[$i]}"
+    TARGET_NAME="${TARGET_NAMES[$i]}"
+
+    print_info "Stopping $TARGET_NAME..."
+
+    if [ -f "$TARGET_DIR/docker-compose.yml" ]; then
+        cd "$TARGET_DIR"
+        docker compose down --remove-orphans 2>/dev/null || \
+        sudo docker compose down --remove-orphans 2>/dev/null || true
+        print_success "$TARGET_NAME stopped and containers removed"
+    fi
+done
+
+# Also remove any stray AzerothCore containers regardless of naming
+print_info "Cleaning up any orphaned containers..."
+docker ps -a --format '{{.Names}}' | grep -iE "worldserver|authserver|ac-database|ac-eluna|ac-client" | \
+    xargs -r docker rm -f 2>/dev/null || \
+sudo docker ps -a --format '{{.Names}}' | grep -iE "worldserver|authserver|ac-database|ac-eluna|ac-client" | \
+    xargs -r sudo docker rm -f 2>/dev/null || true
+print_success "Orphaned containers cleaned up"
 
 # ─────────────────────────────────────────
 # STEP 2 — REMOVE DOCKER IMAGES
@@ -225,7 +289,12 @@ IMAGES=(
     "acore/ac-worldserver"
     "acore/ac-authserver"
     "acore/ac-db-import"
+    "acore/ac-wotlk-worldserver"
+    "acore/ac-wotlk-authserver"
+    "acore/ac-wotlk-db-import"
+    "acore/ac-wotlk-client-data"
     "mysql:8.0"
+    "mysql:8.4"
 )
 
 for image in "${IMAGES[@]}"; do

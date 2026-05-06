@@ -637,52 +637,53 @@ if [[ "$CREATE_CUSTOM" =~ ^[Yy]$ ]]; then
     if command -v sha1sum &>/dev/null; then
         WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | sha1sum | awk '{print toupper($1)}')
     elif command -v shasum &>/dev/null; then
-    WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | shasum -a 1 | awk '{print toupper($1)}')
-else
-    print_warning "sha1sum not found — account creation may need to be done manually."
-    WOW_PASS_HASH=""
-fi
+        WOW_PASS_HASH=$(echo -n "${WOW_USERNAME_UPPER}:${WOW_PASSWORD_UPPER}" | shasum -a 1 | awk '{print toupper($1)}')
+    else
+        print_warning "sha1sum not found — account creation may need to be done manually."
+        WOW_PASS_HASH=""
+    fi
 
-if [ -z "$WOW_PASS_HASH" ]; then
-    print_warning "Could not hash password — skipping automatic account creation."
-    print_info "Create your account manually after the server starts:"
-    print_info "  docker attach $WORLD_CONTAINER"
-    print_info "  account create ${WOW_USERNAME} ${WOW_PASSWORD} ${WOW_PASSWORD}"
-    print_info "  account set gmlevel ${WOW_USERNAME} 3 -1"
-else
-# Insert account directly into auth database
-docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
-  INSERT INTO account (username, sha_pass_hash, reg_mail, email, joindate)
-  VALUES (
-    UPPER('${WOW_USERNAME}'),
-    '${WOW_PASS_HASH}',
-    'admin@local.lan',
-    'admin@local.lan',
-    NOW()
-  ) ON DUPLICATE KEY UPDATE sha_pass_hash='${WOW_PASS_HASH}';
-" 2>/dev/null
+    if [ -z "$WOW_PASS_HASH" ]; then
+        print_warning "Could not hash password — skipping automatic account creation."
+        print_info "Create your account manually after the server starts:"
+        print_info "  docker attach $WORLD_CONTAINER"
+        print_info "  account create ${WOW_USERNAME} ${WOW_PASSWORD} ${WOW_PASSWORD}"
+        print_info "  account set gmlevel ${WOW_USERNAME} 3 -1"
+    else
+        # Insert account directly into auth database
+        docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
+          INSERT INTO account (username, sha_pass_hash, reg_mail, email, joindate)
+          VALUES (
+            UPPER('${WOW_USERNAME}'),
+            '${WOW_PASS_HASH}',
+            'admin@local.lan',
+            'admin@local.lan',
+            NOW()
+          ) ON DUPLICATE KEY UPDATE sha_pass_hash='${WOW_PASS_HASH}';
+        " 2>/dev/null
 
-# Get the account ID we just created
-ACCOUNT_ID=$(docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -sNe \
-  "SELECT id FROM account WHERE username=UPPER('${WOW_USERNAME}');" 2>/dev/null)
+        # Get the account ID we just created
+        ACCOUNT_ID=$(docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -sNe \
+          "SELECT id FROM account WHERE username=UPPER('${WOW_USERNAME}');" 2>/dev/null)
 
-# Set GM level 3 on all realms
-if [ -n "$ACCOUNT_ID" ]; then
-    docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
-      INSERT INTO account_access (id, gmlevel, RealmID)
-      VALUES ('${ACCOUNT_ID}', 3, -1)
-      ON DUPLICATE KEY UPDATE gmlevel=3;
-    " 2>/dev/null
-    print_success "Account created successfully: ${WOW_USERNAME}"
-    print_info "GM Level 3 granted — full admin powers on your server!"
-else
-    print_warning "Account may not have been created automatically."
-    print_info "You can create it manually after launch:"
-    print_info "  docker attach $WORLD_CONTAINER"
-    print_info "  account create ${WOW_USERNAME} ${WOW_PASSWORD} ${WOW_PASSWORD}"
-    print_info "  account set gmlevel ${WOW_USERNAME} 3 -1"
-    print_info "  (then press Ctrl+P followed by Ctrl+Q to exit)"
-fi
+        # Set GM level 3 on all realms
+        if [ -n "$ACCOUNT_ID" ]; then
+            docker exec "$DB_CONTAINER" mysql -uroot -ppassword acore_auth -e "
+              INSERT INTO account_access (id, gmlevel, RealmID)
+              VALUES ('${ACCOUNT_ID}', 3, -1)
+              ON DUPLICATE KEY UPDATE gmlevel=3;
+            " 2>/dev/null
+            print_success "Custom account created: ${WOW_USERNAME}"
+            print_info "GM Level 3 granted — full admin powers on your server!"
+        else
+            print_warning "Custom account may not have been created automatically."
+            print_info "You can create it manually:"
+            print_info "  docker attach $WORLD_CONTAINER"
+            print_info "  account create ${WOW_USERNAME} ${WOW_PASSWORD} ${WOW_PASSWORD}"
+            print_info "  account set gmlevel ${WOW_USERNAME} 3 -1"
+            print_info "  (then press Ctrl+P followed by Ctrl+Q to exit)"
+        fi
+    fi
 fi
 
 # Save credentials

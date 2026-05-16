@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { DemoDashboard } from "@/components/demo-dashboard"
 import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
+import { ServerControlScreen } from "@/components/server-control-screen"
 import {
   ServerStateProvider,
   useServerState,
@@ -24,22 +25,32 @@ export default function App() {
 }
 
 function AppShell() {
-  const { installed, installOpen, setInstallOpen, installStatus } =
-    useServerState()
+  const {
+    installed,
+    installOpen,
+    setInstallOpen,
+    installStatus,
+    serverActionStatus,
+    serverActionKind,
+  } = useServerState()
 
-  // While the installer is running or has just finished, the console takes
-  // over the main pane so the user can watch it finish.
+  // Routing priority: install lifecycle takes the main pane first, then
+  // any in-flight server action, then the dashboard / welcome screen.
   const showInstallScreen = installStatus !== "idle"
+  const showServerActionScreen =
+    !showInstallScreen && serverActionStatus !== "idle"
 
-  const title = showInstallScreen
-    ? "Installing"
-    : installed
-      ? "Documents"
-      : "Welcome!"
+  let title = "Welcome!"
+  if (showInstallScreen) title = "Installing"
+  else if (showServerActionScreen)
+    title = serverActionKind === "stop" ? "Stopping server" : "Starting server"
+  else if (installed) title = "Documents"
 
   let mainContent
   if (showInstallScreen) {
     mainContent = <InstallProgressScreen />
+  } else if (showServerActionScreen) {
+    mainContent = <ServerControlScreen />
   } else if (installed) {
     mainContent = <DemoDashboard />
   } else {

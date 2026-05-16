@@ -2,6 +2,7 @@ import * as React from "react"
 import {
   ArrowClockwiseIcon,
   CheckCircleIcon,
+  CheckIcon,
   ProhibitIcon,
   WarningCircleIcon,
   XCircleIcon,
@@ -17,8 +18,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { InstallConsole } from "@/components/install-console"
+import { LottieLoop } from "@/components/lottie-loop"
 import { useServerState } from "@/components/server-state-context"
 import { cn } from "@/lib/utils"
+import successAnimation from "@/assets/lottie/Success.json"
+import loadingAnimation from "@/assets/lottie/loadingV4.json"
 
 export function InstallProgressScreen() {
   const {
@@ -74,11 +78,22 @@ export function InstallProgressScreen() {
         <StatusBadge status={installStatus} exitCode={installExitCode} />
       </header>
 
-      <InstallConsole
-        lines={installLog}
-        pending={installPending}
-        className="h-full min-h-0"
-      />
+      <div className="relative min-h-0">
+        <InstallConsole
+          entries={installLog}
+          pending={installPending}
+          className="h-full min-h-0"
+        />
+        {installStatus === "succeeded" && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-zinc-950/70 backdrop-blur-sm">
+            <LottieLoop
+              animationData={successAnimation}
+              delayBetweenLoopsMs={2000}
+              className="size-56"
+            />
+          </div>
+        )}
+      </div>
 
       <div className="flex justify-end gap-2">
         {(isRunning || isCancelling || isCleaning) && (
@@ -92,12 +107,22 @@ export function InstallProgressScreen() {
             {cancelButtonLabel}
           </Button>
         )}
-        {isTerminal && (
-          <Button variant="outline" size="sm" onClick={resetInstall}>
-            <ArrowClockwiseIcon className="size-4" />
-            Back to welcome
-          </Button>
-        )}
+        {isTerminal &&
+          (installStatus === "succeeded" ? (
+            <Button
+              size="sm"
+              onClick={resetInstall}
+              className="bg-[#5ea500] text-white hover:bg-[#5ea500]/90"
+            >
+              Complete!
+              <CheckIcon className="size-4" />
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={resetInstall}>
+              <ArrowClockwiseIcon className="size-4" />
+              Back to welcome
+            </Button>
+          ))}
       </div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -144,7 +169,7 @@ function StatusBadge({
   if (status === "running") {
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/40 px-3 py-1 text-xs font-medium text-foreground">
-        <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+        <LottieLoop animationData={loadingAnimation} className="size-4" />
         Running
       </span>
     )
@@ -152,7 +177,7 @@ function StatusBadge({
   if (status === "cancelling") {
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-        <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
+        <LottieLoop animationData={loadingAnimation} className="size-4" />
         Cancelling…
       </span>
     )
@@ -160,7 +185,7 @@ function StatusBadge({
   if (status === "cleaning") {
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-        <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
+        <LottieLoop animationData={loadingAnimation} className="size-4" />
         Cleaning up…
       </span>
     )

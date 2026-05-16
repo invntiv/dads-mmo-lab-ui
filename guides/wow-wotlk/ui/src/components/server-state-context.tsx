@@ -33,15 +33,40 @@ export type InstallLogLine = {
   text: string
 }
 
+export type InstallSection = {
+  id: number
+  title: string
+  state: "active" | "done"
+  lines: InstallLogLine[]
+  /**
+   * Transient progress line currently in-flight inside this section
+   * (e.g. a `\r`-updated docker layer download bar). When the section
+   * closes or a non-transient final line of the same stream lands, this
+   * is committed/cleared the same way the top-level pending is.
+   */
+  pending: InstallLogLine | null
+}
+
+/**
+ * The install log is a flat list of entries that the console renders top
+ * to bottom. Section entries own their own nested lines so the console
+ * can render them as collapsibles — that's how noisy ranges like the
+ * docker build get tucked behind a single expandable header instead of
+ * spamming thousands of lines.
+ */
+export type InstallLogEntry =
+  | { kind: "line"; data: InstallLogLine }
+  | { kind: "section"; data: InstallSection }
+
 type InstallOutputEvent = {
   stream: "stdout" | "stderr" | "system"
   line: string
-  /**
-   * True when the source line was `\r`-terminated — a progress update
-   * that should overwrite the previous transient line of the same stream
-   * rather than append to history.
-   */
   transient: boolean
+}
+
+type InstallSectionEvent = {
+  stage: "start" | "end"
+  title: string | null
 }
 
 type InstallCleanupEvent = {
@@ -59,6 +84,48 @@ type InstallDoneEvent = {
   cancelled: boolean
 }
 
+// ── Server-control types ────────────────────────────────────────────────
+
+/** Mirror of Rust's `WorldserverStatus` (serde rename_all = "lowercase"). */
+export type WorldserverStatus =
+  | "notpresent"
+  | "stopped"
+  | "starting"
+  | "running"
+
+export type ServerStatusPayload = {
+  worldserver: WorldserverStatus
+  installPath: string | null
+}
+
+export type ServerActionKind = "start" | "stop"
+
+/** State machine for an in-flight start/stop. Mirrors install lifecycle. */
+export type ServerActionStatus = "idle" | "running" | "succeeded" | "failed"
+
+type ServerOutputEvent = {
+  stream: "stdout" | "stderr" | "system"
+  line: string
+  transient: boolean
+}
+
+type ServerDoneEvent = {
+  action: ServerActionKind
+  success: boolean
+  code: number | null
+  message: string | null
+}
+
+type ConsoleState = {
+  log: InstallLogEntry[]
+  /**
+   * Transient progress line outside of any active section. When a section
+   * opens, we commit this to history first so it doesn't get attributed
+   * to the section.
+   */
+  topPending: InstallLogLine | null
+}
+
 type ServerState = {
   // Detection
   installs: DetectedInstall[]
@@ -73,20 +140,189 @@ type ServerState = {
 
   // Install lifecycle
   installStatus: InstallStatus
-  installLog: InstallLogLine[]
-  /**
-   * The most recent transient (progress-update) line. Rendered after the
-   * committed log so the console behaves like a real terminal: `\r`-only
-   * updates overwrite a single live line instead of appending a new one.
-   */
+  installLog: InstallLogEntry[]
   installPending: InstallLogLine | null
   installExitCode: number | null
   startInstall: (choices: OnboardingChoices) => Promise<void>
   cancelInstall: () => Promise<void>
   resetInstall: () => void
+
+  // Server runtime status (polled from docker)
+  worldserverStatus: WorldserverStatus | "checking"
+  refreshServerStatus: () => Promise<void>
+
+  // Server start/stop lifecycle (uses same console primitives as install)
+  serverActionStatus: ServerActionStatus
+  serverActionKind: ServerActionKind | null
+  serverActionLog: InstallLogEntry[]
+  serverActionPending: InstallLogLine | null
+  startServer: () => Promise<void>
+  stopServer: () => Promise<void>
+  resetServerAction: () => void
 }
 
 const ServerStateContext = React.createContext<ServerState | null>(null)
+
+const EMPTY_CONSOLE_STATE: ConsoleState = { log: [], topPending: null }
+
+// ── Console-state reducers ──────────────────────────────────────────────
+// Pulled out of the component so the install:* handlers stay short and
+// the state transitions are easier to read in isolation.
+
+function isActiveSection(
+  entry: InstallLogEntry | undefined
+): entry is { kind: "section"; data: InstallSection } {
+  return entry?.kind === "section" && entry.data.state === "active"
+}
+
+function applyTransient(
+  prev: ConsoleState,
+  stream: InstallLogLine["stream"],
+  text: string,
+  nextId: () => number
+): ConsoleState {
+  const last = prev.log[prev.log.length - 1]
+  const newLine: InstallLogLine = { id: nextId(), stream, text }
+
+  if (isActiveSection(last)) {
+    const sec = last.data
+    // Cross-stream pending inside a section → commit the old pending to
+    // the section's lines before replacing it with the new one.
+    const nextLines =
+      sec.pending && sec.pending.stream !== stream
+        ? [...sec.lines, sec.pending]
+        : sec.lines
+    return {
+      log: [
+        ...prev.log.slice(0, -1),
+        {
+          kind: "section",
+          data: { ...sec, lines: nextLines, pending: newLine },
+        },
+      ],
+      topPending: null,
+    }
+  }
+
+  // Top-level transient
+  if (prev.topPending && prev.topPending.stream !== stream) {
+    return {
+      log: [...prev.log, { kind: "line", data: prev.topPending }],
+      topPending: newLine,
+    }
+  }
+  return { log: prev.log, topPending: newLine }
+}
+
+function applyFinal(
+  prev: ConsoleState,
+  stream: InstallLogLine["stream"],
+  text: string,
+  nextId: () => number
+): ConsoleState {
+  const last = prev.log[prev.log.length - 1]
+  const newLine: InstallLogLine = { id: nextId(), stream, text }
+
+  if (isActiveSection(last)) {
+    const sec = last.data
+    // Same terminal-overwrite semantics as top-level: drop same-stream
+    // pending (the new final replaces it), preserve cross-stream pending.
+    const nextLines =
+      sec.pending && sec.pending.stream !== stream
+        ? [...sec.lines, sec.pending, newLine]
+        : [...sec.lines, newLine]
+    return {
+      log: [
+        ...prev.log.slice(0, -1),
+        {
+          kind: "section",
+          data: { ...sec, lines: nextLines, pending: null },
+        },
+      ],
+      topPending: null,
+    }
+  }
+
+  // Top-level final
+  if (prev.topPending && prev.topPending.stream !== stream) {
+    return {
+      log: [
+        ...prev.log,
+        { kind: "line", data: prev.topPending },
+        { kind: "line", data: newLine },
+      ],
+      topPending: null,
+    }
+  }
+  return {
+    log: [...prev.log, { kind: "line", data: newLine }],
+    topPending: null,
+  }
+}
+
+function applySectionStart(
+  prev: ConsoleState,
+  title: string,
+  nextId: () => number
+): ConsoleState {
+  const newSection: InstallSection = {
+    id: nextId(),
+    title,
+    state: "active",
+    lines: [],
+    pending: null,
+  }
+  // If a top-level transient is in flight, commit it before opening the
+  // section so it stays in the outer log instead of being swallowed.
+  const baseLog = prev.topPending
+    ? [...prev.log, { kind: "line" as const, data: prev.topPending }]
+    : prev.log
+  return {
+    log: [...baseLog, { kind: "section", data: newSection }],
+    topPending: null,
+  }
+}
+
+function applySectionEnd(prev: ConsoleState): ConsoleState {
+  const last = prev.log[prev.log.length - 1]
+  if (!isActiveSection(last)) return prev
+  const sec = last.data
+  const finalLines = sec.pending ? [...sec.lines, sec.pending] : sec.lines
+  return {
+    log: [
+      ...prev.log.slice(0, -1),
+      {
+        kind: "section",
+        data: { ...sec, lines: finalLines, pending: null, state: "done" },
+      },
+    ],
+    topPending: prev.topPending,
+  }
+}
+
+/**
+ * Commit any in-flight transients (top-level + the trailing active section)
+ * and mark any trailing active section as done. Used when the install
+ * exits so the console doesn't end with an indefinitely-active spinner.
+ */
+function flushOnTerminate(prev: ConsoleState): ConsoleState {
+  let log = prev.topPending
+    ? [...prev.log, { kind: "line" as const, data: prev.topPending }]
+    : prev.log
+  const last = log[log.length - 1]
+  if (isActiveSection(last)) {
+    const sec = last.data
+    const finalLines = sec.pending ? [...sec.lines, sec.pending] : sec.lines
+    log = [
+      ...log.slice(0, -1),
+      {
+        kind: "section",
+        data: { ...sec, lines: finalLines, pending: null, state: "done" },
+      },
+    ]
+  }
+  return { log, topPending: null }
+}
 
 export function ServerStateProvider({ children }: { children: React.ReactNode }) {
   const [installs, setInstalls] = React.useState<DetectedInstall[]>([])
@@ -95,12 +331,22 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
 
   const [installStatus, setInstallStatus] =
     React.useState<InstallStatus>("idle")
-  const [installLog, setInstallLog] = React.useState<InstallLogLine[]>([])
-  const [installPending, setInstallPending] =
-    React.useState<InstallLogLine | null>(null)
+  const [consoleState, setConsoleState] =
+    React.useState<ConsoleState>(EMPTY_CONSOLE_STATE)
   const [installExitCode, setInstallExitCode] = React.useState<number | null>(
     null
   )
+
+  // ── Server-control state ──────────────────────────────────────────────
+  const [worldserverStatus, setWorldserverStatus] = React.useState<
+    WorldserverStatus | "checking"
+  >("checking")
+  const [serverActionStatus, setServerActionStatus] =
+    React.useState<ServerActionStatus>("idle")
+  const [serverActionKind, setServerActionKind] =
+    React.useState<ServerActionKind | null>(null)
+  const [serverConsoleState, setServerConsoleState] =
+    React.useState<ConsoleState>(EMPTY_CONSOLE_STATE)
 
   // Monotonic id so React keys are stable even if text repeats
   const lineCounter = React.useRef(0)
@@ -129,56 +375,51 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     void refreshInstalls()
   }, [refreshInstalls])
 
-  // Subscribe to install:* events for the whole app lifetime.
-  //
-  // Each listen() returns a Promise<UnlistenFn>. We start all three eagerly
-  // and capture the promises so cleanup can `.then(unlisten => unlisten())`
-  // them — that pattern is StrictMode- and HMR-safe: even if cleanup fires
-  // before listen() resolves, the .then() runs whenever the promise lands
-  // and calls unlisten immediately. The previous async-IIFE-with-cancelled-
-  // flag pattern left listeners registered on the Rust side during the
-  // window between mount-#2's effect and mount-#1's IIFE finishing, which
-  // is why every line was rendering twice.
+  const refreshServerStatus = React.useCallback(async () => {
+    if (!isTauri()) {
+      setWorldserverStatus("notpresent")
+      return
+    }
+    try {
+      const status = await trackedInvoke<ServerStatusPayload>(
+        "get_server_status"
+      )
+      setWorldserverStatus(status.worldserver)
+    } catch (err) {
+      console.error("get_server_status failed", err)
+      setWorldserverStatus("notpresent")
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void refreshServerStatus()
+  }, [refreshServerStatus])
+
+  // Subscribe to install:* events for the whole app lifetime using the
+  // promise-thenable cleanup pattern — StrictMode and HMR safe.
   React.useEffect(() => {
     if (!isTauri()) return
 
     const outputPromise = listen<InstallOutputEvent>("install:output", (e) => {
       const { stream, line, transient } = e.payload
-      if (transient) {
-        // Progress update — replace the pending slot. If the previous
-        // pending belonged to a different stream, commit it to history
-        // first so we don't lose it.
-        setInstallPending((prev) => {
-          if (prev && prev.stream !== stream) {
-            setInstallLog((log) => [...log, prev])
-          }
-          return { id: nextId(), stream, text: line }
-        })
-      } else {
-        // Final line — in a real terminal, this overwrites whatever was
-        // sitting in the in-place row (e.g. "...100%\r" then
-        // "...100%, done.\n" leaves only the second line visible). Mirror
-        // that: when the pending is from the same stream, drop it and
-        // just commit the final. Only preserve the pending if it came
-        // from a different stream — that progress trail is unrelated to
-        // this final line.
-        setInstallPending((prev) => {
-          if (prev && prev.stream !== stream) {
-            setInstallLog((log) => [
-              ...log,
-              prev,
-              { id: nextId(), stream, text: line },
-            ])
-          } else {
-            setInstallLog((log) => [
-              ...log,
-              { id: nextId(), stream, text: line },
-            ])
-          }
-          return null
-        })
-      }
+      setConsoleState((prev) =>
+        transient
+          ? applyTransient(prev, stream, line, nextId)
+          : applyFinal(prev, stream, line, nextId)
+      )
     })
+
+    const sectionPromise = listen<InstallSectionEvent>(
+      "install:section",
+      (e) => {
+        if (e.payload.stage === "start") {
+          const title = e.payload.title ?? "Section"
+          setConsoleState((prev) => applySectionStart(prev, title, nextId))
+        } else {
+          setConsoleState(applySectionEnd)
+        }
+      }
+    )
 
     const cleanupPromise = listen<InstallCleanupEvent>(
       "install:cleanup",
@@ -186,21 +427,11 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
         if (e.payload.stage === "started") {
           setInstallStatus("cleaning")
         }
-        // The finished stage's outcome is already surfaced as system lines
-        // via install:output (see perform_cleanup in install.rs), and
-        // install:done is what flips us to the terminal state.
       }
     )
 
     const donePromise = listen<InstallDoneEvent>("install:done", (e) => {
-      // Commit any in-flight transient line to history — once the script
-      // is done, there will be no more updates to it.
-      setInstallPending((prev) => {
-        if (prev) {
-          setInstallLog((log) => [...log, prev])
-        }
-        return null
-      })
+      setConsoleState(flushOnTerminate)
       setInstallExitCode(e.payload.code)
       const nextStatus: InstallStatus = e.payload.cancelled
         ? "cancelled"
@@ -208,9 +439,6 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
           ? "succeeded"
           : "failed"
       setInstallStatus(nextStatus)
-      // The cleanup phase emits its own system lines (deleted / refused /
-      // failed) right before this fires, so the cancelled message here
-      // just needs to be a clean closing line.
       const msg = e.payload.cancelled
         ? "Installer cancelled."
         : e.payload.success
@@ -218,11 +446,9 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
           : `Installer failed (code ${e.payload.code ?? "?"}${
               e.payload.message ? ": " + e.payload.message : ""
             }).`
-      setInstallLog((prev) => [
-        ...prev,
-        { id: nextId(), stream: "system", text: msg },
-      ])
-      // After a successful install, re-scan so the UI flips to management.
+      setConsoleState((prev) =>
+        applyFinal(prev, "system", msg, nextId)
+      )
       if (e.payload.success) {
         void refreshInstalls()
       }
@@ -230,29 +456,66 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
 
     return () => {
       void outputPromise.then((fn) => fn()).catch(() => {})
+      void sectionPromise.then((fn) => fn()).catch(() => {})
       void cleanupPromise.then((fn) => fn()).catch(() => {})
       void donePromise.then((fn) => fn()).catch(() => {})
     }
   }, [nextId, refreshInstalls])
 
+  // ── Server start/stop event subscriptions ────────────────────────────
+  React.useEffect(() => {
+    if (!isTauri()) return
+
+    const outputPromise = listen<ServerOutputEvent>("server:output", (e) => {
+      const { stream, line, transient } = e.payload
+      setServerConsoleState((prev) =>
+        transient
+          ? applyTransient(prev, stream, line, nextId)
+          : applyFinal(prev, stream, line, nextId)
+      )
+    })
+
+    const donePromise = listen<ServerDoneEvent>("server:done", (e) => {
+      setServerConsoleState(flushOnTerminate)
+      const verb = e.payload.action === "start" ? "Start" : "Stop"
+      const msg = e.payload.success
+        ? `${verb} succeeded.`
+        : `${verb} failed${e.payload.code != null ? ` (code ${e.payload.code})` : ""}${
+            e.payload.message ? ": " + e.payload.message : ""
+          }.`
+      setServerConsoleState((prev) => applyFinal(prev, "system", msg, nextId))
+      setServerActionStatus(e.payload.success ? "succeeded" : "failed")
+      // Always re-check status — even a failed action may have changed
+      // the worldserver's state (e.g. half-started containers).
+      void refreshServerStatus()
+    })
+
+    return () => {
+      void outputPromise.then((fn) => fn()).catch(() => {})
+      void donePromise.then((fn) => fn()).catch(() => {})
+    }
+  }, [nextId, refreshServerStatus])
+
   const startInstall = React.useCallback(
     async (choices: OnboardingChoices) => {
       if (!isTauri()) {
-        // In the browser dev shell, just simulate the lifecycle so the
-        // console screen can be styled without a running backend.
         setInstallStatus("running")
-        setInstallPending(null)
-        setInstallLog([
-          {
-            id: nextId(),
-            stream: "system",
-            text: "[browser preview] Tauri runtime not detected — no install will run.",
-          },
-        ])
+        setConsoleState({
+          log: [
+            {
+              kind: "line",
+              data: {
+                id: nextId(),
+                stream: "system",
+                text: "[browser preview] Tauri runtime not detected — no install will run.",
+              },
+            },
+          ],
+          topPending: null,
+        })
         return
       }
-      setInstallLog([])
-      setInstallPending(null)
+      setConsoleState(EMPTY_CONSOLE_STATE)
       setInstallExitCode(null)
       setInstallStatus("running")
       try {
@@ -267,14 +530,14 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
         })
       } catch (err) {
         setInstallStatus("failed")
-        setInstallLog((prev) => [
-          ...prev,
-          {
-            id: nextId(),
-            stream: "system",
-            text: `Failed to launch installer: ${String(err)}`,
-          },
-        ])
+        setConsoleState((prev) =>
+          applyFinal(
+            prev,
+            "system",
+            `Failed to launch installer: ${String(err)}`,
+            nextId
+          )
+        )
       }
     },
     [nextId]
@@ -286,36 +549,71 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       return
     }
     setInstallStatus("cancelling")
-    setInstallLog((prev) => [
-      ...prev,
-      {
-        id: nextId(),
-        stream: "system",
-        text: "Cancelling… (sending SIGTERM to installer process group)",
-      },
-    ])
+    setConsoleState((prev) =>
+      applyFinal(
+        prev,
+        "system",
+        "Cancelling… (sending SIGTERM to installer process group)",
+        nextId
+      )
+    )
     try {
       await trackedInvoke<boolean>("cancel_install")
-      // The actual transition to "cancelled" happens when the install:done
-      // event lands. If nothing was running on the Rust side, we revert.
     } catch (err) {
       setInstallStatus("running")
-      setInstallLog((prev) => [
-        ...prev,
-        {
-          id: nextId(),
-          stream: "system",
-          text: `Cancel failed: ${String(err)}`,
-        },
-      ])
+      setConsoleState((prev) =>
+        applyFinal(prev, "system", `Cancel failed: ${String(err)}`, nextId)
+      )
     }
   }, [nextId])
 
   const resetInstall = React.useCallback(() => {
     setInstallStatus("idle")
-    setInstallLog([])
-    setInstallPending(null)
+    setConsoleState(EMPTY_CONSOLE_STATE)
     setInstallExitCode(null)
+  }, [])
+
+  // ── Server action callbacks ───────────────────────────────────────────
+  const startServer = React.useCallback(async () => {
+    if (!isTauri()) {
+      setServerActionStatus("succeeded")
+      return
+    }
+    setServerConsoleState(EMPTY_CONSOLE_STATE)
+    setServerActionKind("start")
+    setServerActionStatus("running")
+    try {
+      await trackedInvoke("start_server")
+    } catch (err) {
+      setServerActionStatus("failed")
+      setServerConsoleState((prev) =>
+        applyFinal(prev, "system", `Failed to start: ${String(err)}`, nextId)
+      )
+    }
+  }, [nextId])
+
+  const stopServer = React.useCallback(async () => {
+    if (!isTauri()) {
+      setServerActionStatus("succeeded")
+      return
+    }
+    setServerConsoleState(EMPTY_CONSOLE_STATE)
+    setServerActionKind("stop")
+    setServerActionStatus("running")
+    try {
+      await trackedInvoke("stop_server")
+    } catch (err) {
+      setServerActionStatus("failed")
+      setServerConsoleState((prev) =>
+        applyFinal(prev, "system", `Failed to stop: ${String(err)}`, nextId)
+      )
+    }
+  }, [nextId])
+
+  const resetServerAction = React.useCallback(() => {
+    setServerActionStatus("idle")
+    setServerActionKind(null)
+    setServerConsoleState(EMPTY_CONSOLE_STATE)
   }, [])
 
   const value = React.useMemo<ServerState>(
@@ -328,12 +626,21 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       setInstallOpen,
       openInstall: () => setInstallOpen(true),
       installStatus,
-      installLog,
-      installPending,
+      installLog: consoleState.log,
+      installPending: consoleState.topPending,
       installExitCode,
       startInstall,
       cancelInstall,
       resetInstall,
+      worldserverStatus,
+      refreshServerStatus,
+      serverActionStatus,
+      serverActionKind,
+      serverActionLog: serverConsoleState.log,
+      serverActionPending: serverConsoleState.topPending,
+      startServer,
+      stopServer,
+      resetServerAction,
     }),
     [
       installs,
@@ -341,12 +648,19 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       refreshInstalls,
       installOpen,
       installStatus,
-      installLog,
-      installPending,
+      consoleState,
       installExitCode,
       startInstall,
       cancelInstall,
       resetInstall,
+      worldserverStatus,
+      refreshServerStatus,
+      serverActionStatus,
+      serverActionKind,
+      serverConsoleState,
+      startServer,
+      stopServer,
+      resetServerAction,
     ]
   )
 

@@ -71,6 +71,16 @@ print_error()   { echo -e "${RED}[ERR] $1${NC}"; }
 print_info()    { echo -e "${BLUE}[..]  $1${NC}"; }
 
 # ─────────────────────────────────────────
+# UI COLLAPSIBLE-SECTION MARKERS
+# ─────────────────────────────────────────
+# The Tauri UI's forward_lines watches for these sentinel lines and turns
+# them into `install:section` events, then hides the sentinel from the
+# console. Wrap noisy commands (docker build, docker pull) with these so
+# the user gets a collapsible block instead of thousands of lines.
+section_start() { echo "::DML::SECTION::START::$1::"; }
+section_end()   { echo "::DML::SECTION::END::"; }
+
+# ─────────────────────────────────────────
 # RESOLVE INPUTS
 # ─────────────────────────────────────────
 SERVER_TYPE="${DML_SERVER_TYPE:-}"
@@ -356,9 +366,11 @@ services:
 OVERRIDE
 
                 cd "$SERVER_DIR" || exit 1
+                section_start "Docker build — NPCBots (collapsed; expand to follow live)"
                 if ! docker compose up -d --build 2>&1 | tee "$HOME/npcbots-build.log"; then
                     :
                 fi
+                section_end
                 if [ ${PIPESTATUS[0]} -ne 0 ]; then
                     print_error "Compilation failed. See ~/npcbots-build.log"
                     exit 1
@@ -413,9 +425,11 @@ OVERRIDE
 
             print_info "Compiling Playerbots (2-4 hours)..."
             cd "$SERVER_DIR" || exit 1
+            section_start "Docker build — Playerbots (collapsed; expand to follow live)"
             if ! docker compose up -d --build 2>&1 | tee "$HOME/playerbots-build.log"; then
                 :
             fi
+            section_end
             if [ ${PIPESTATUS[0]} -ne 0 ]; then
                 print_error "Compilation failed. See ~/playerbots-build.log"
                 exit 1

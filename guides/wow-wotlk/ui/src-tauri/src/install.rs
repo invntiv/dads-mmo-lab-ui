@@ -60,6 +60,15 @@ struct OutputEvent {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct SectionEvent {
+    /// "start" or "end"
+    stage: &'static str,
+    /// Only present on `start`. Human-readable section header shown by the UI.
+    title: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct CleanupEvent {
     stage: &'static str, // "started" | "finished"
     path: String,
@@ -77,8 +86,17 @@ struct DoneEvent {
 }
 
 pub const EVT_OUTPUT: &str = "install:output";
+pub const EVT_SECTION: &str = "install:section";
 pub const EVT_CLEANUP: &str = "install:cleanup";
 pub const EVT_DONE: &str = "install:done";
+
+/// Sentinel prefixes emitted by `install-wow-ui.sh`'s `section_start` /
+/// `section_end` helpers. forward_lines watches for these and converts
+/// them into `install:section` events, suppressing the marker line from
+/// the console output so the user never sees the raw sentinel.
+const SECTION_START_PREFIX: &str = "::DML::SECTION::START::";
+const SECTION_START_SUFFIX: &str = "::";
+const SECTION_END_MARKER: &str = "::DML::SECTION::END::";
 
 fn target_dir_for(server_type: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
@@ -497,15 +515,49 @@ async fn forward_lines<R: AsyncRead + Unpin>(
         if line.is_empty() {
             return;
         }
+        let stripped = strip_ansi(line);
+        line.clear();
+
+        // Section sentinels are only meaningful when they arrive as final
+        // (non-transient) lines — they're plain `echo` output from the
+        // script. Catch them here and translate to install:section events
+        // without emitting the marker text itself.
+        if !transient {
+            let trimmed = stripped.trim();
+            if let Some(rest) = trimmed.strip_prefix(SECTION_START_PREFIX) {
+                let title = rest
+                    .strip_suffix(SECTION_START_SUFFIX)
+                    .unwrap_or(rest)
+                    .to_string();
+                let _ = app.emit(
+                    EVT_SECTION,
+                    SectionEvent {
+                        stage: "start",
+                        title: Some(title),
+                    },
+                );
+                return;
+            }
+            if trimmed == SECTION_END_MARKER {
+                let _ = app.emit(
+                    EVT_SECTION,
+                    SectionEvent {
+                        stage: "end",
+                        title: None,
+                    },
+                );
+                return;
+            }
+        }
+
         let _ = app.emit(
             EVT_OUTPUT,
             OutputEvent {
                 stream,
-                line: strip_ansi(line),
+                line: stripped,
                 transient,
             },
         );
-        line.clear();
     };
 
     loop {

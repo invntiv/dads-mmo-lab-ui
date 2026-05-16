@@ -3,6 +3,7 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_log::{Target, TargetKind};
 
 mod install;
+mod server;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -52,11 +53,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(external_navigation_plugin())
         .manage(install::InstallState::default())
+        .manage(server::ServerControlState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             install::detect_installs,
             install::start_install,
-            install::cancel_install
+            install::cancel_install,
+            server::get_server_status,
+            server::start_server,
+            server::stop_server
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {

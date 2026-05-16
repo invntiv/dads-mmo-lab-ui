@@ -1,0 +1,6 @@
+# Claude Code per-user settings (machine-specific)
+.claude/settings.local.json
+
+# VSCode workspace settings (machine-specific); allow shared extension recommendations
+.vscode/*
+!.vscode/extensions.json

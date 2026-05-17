@@ -142,7 +142,9 @@ function ConsoleLine({ line }: { line: InstallLogLine }) {
       ? "text-rose-400"
       : line.stream === "system"
         ? "text-amber-300"
-        : "text-zinc-200"
+        : line.stream === "highlight"
+          ? "font-semibold text-fuchsia-400"
+          : "text-zinc-200"
   return (
     <pre className={cn("whitespace-pre-wrap break-words", color)}>
       {line.text || " "}

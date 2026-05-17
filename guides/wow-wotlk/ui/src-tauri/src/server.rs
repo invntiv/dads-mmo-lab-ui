@@ -15,6 +15,13 @@ pub struct ServerControlState {
     pub running_pid: Mutex<Option<u32>>,
 }
 
+/// AzerothCore worldserver listens on this host port (mapped from the
+/// container's 8085). All three variants (base, npcbots, playerbots)
+/// inherit this from acore-docker's compose, so it's safe to hardcode
+/// for now. If a user ever needs a different host port, we'll parse it
+/// out of `docker inspect`.
+const WORLDSERVER_PORT: u16 = 8085;
+
 #[derive(Serialize, Clone)]
 struct OutputEvent {
     stream: &'static str,
@@ -97,11 +104,20 @@ fn is_container_running(name: &str) -> bool {
     out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
 }
 
-fn worldserver_is_ready(name: &str) -> bool {
-    // Mirrors the install script: world initialization prints "ready..."
-    // (and many module-specific lines). Match that token.
+/// Returns true if the compose stack at `install_path` defines a service
+/// with the given name. Used to decide whether `--scale phpmyadmin=0` is
+/// safe to pass on start — Base / NPCBots-prebuilt installs use
+/// acore-docker which includes phpmyadmin; the Playerbots fork doesn't
+/// define that service, so passing the flag there errors out with
+/// "no such service: phpmyadmin".
+fn compose_has_service(install_path: &Path, service: &str) -> bool {
+    let compose_file = install_path.join("docker-compose.yml");
+    let Some(compose_str) = compose_file.to_str() else {
+        return false;
+    };
     let Ok(out) = std::process::Command::new("docker")
-        .args(["logs", "--tail", "200", name])
+        .args(["compose", "-f", compose_str, "config", "--services"])
+        .current_dir(install_path)
         .output()
     else {
         return false;
@@ -109,8 +125,21 @@ fn worldserver_is_ready(name: &str) -> bool {
     if !out.status.success() {
         return false;
     }
-    String::from_utf8_lossy(&out.stdout).contains("ready...")
-        || String::from_utf8_lossy(&out.stderr).contains("ready...")
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l.trim() == service)
+}
+
+/// Try to open a TCP connection to the worldserver's host port. The
+/// worldserver only starts accepting connections once world init is
+/// fully done, so this is a direct signal of "ready for clients" — much
+/// cheaper and more reliable than scanning docker logs for the "ready..."
+/// marker. Short timeout because localhost is instant when up.
+fn worldserver_accepts_connections() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr: SocketAddr = ([127, 0, 0, 1], WORLDSERVER_PORT).into();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
 #[tauri::command]
@@ -123,7 +152,7 @@ pub fn get_server_status() -> Result<ServerStatus, String> {
         Some(name) => {
             if !is_container_running(&name) {
                 WorldserverStatus::Stopped
-            } else if worldserver_is_ready(&name) {
+            } else if worldserver_accepts_connections() {
                 WorldserverStatus::Running
             } else {
                 WorldserverStatus::Starting
@@ -177,11 +206,16 @@ async fn spawn_compose(
     let stdout = child.stdout.take().ok_or("missing stdout pipe")?;
     let stderr = child.stderr.take().ok_or("missing stderr pipe")?;
 
+    // Tag both pipes as "stdout" so the console renders them neutral.
+    // docker compose writes container lifecycle messages (Created /
+    // Starting / Healthy / etc.) to stderr by convention, but they are
+    // informational, not errors. A real failure shows up as the action's
+    // exit code, surfaced via the install:done event — not via stderr
+    // coloring. Avoids "every line is red and looks scary".
     let stdout_handle = tokio::spawn(forward_lines(stdout, app.clone(), "stdout"));
-    let stderr_handle = tokio::spawn(forward_lines(stderr, app.clone(), "stderr"));
+    let stderr_handle = tokio::spawn(forward_lines(stderr, app.clone(), "stdout"));
 
     let app_done = app.clone();
-    let install_path = install_path.to_path_buf();
     tokio::spawn(async move {
         let result = child.wait().await;
         if let Some(state) = app_done.try_state::<ServerControlState>() {
@@ -203,7 +237,7 @@ async fn spawn_compose(
         if action == "start" {
             if let Ok(s) = &result {
                 if s.success() {
-                    match wait_for_world_ready(&app_done, &install_path).await {
+                    match wait_for_world_ready(&app_done).await {
                         Ok(()) => {}
                         Err(e) => {
                             wait_success = false;
@@ -243,33 +277,35 @@ async fn spawn_compose(
     Ok(())
 }
 
-async fn wait_for_world_ready(app: &AppHandle, _install_path: &Path) -> Result<(), String> {
-    // Poll docker logs once a second for the worldserver "ready..." line.
-    // Mirrors the install script. Cap at 30 minutes (first launch after
-    // compile is the slow case — Playerbots database migration).
-    const POLL_INTERVAL_SECS: u64 = 5;
+async fn wait_for_world_ready(app: &AppHandle) -> Result<(), String> {
+    // Poll the worldserver's TCP port every few seconds until it accepts
+    // connections. Cap at 30 minutes (first launch after compile is the
+    // slow case — Playerbots database migration). If the container dies
+    // mid-wait, bail with a clear error.
+    const POLL_INTERVAL_SECS: u64 = 2;
     const MAX_SECS: u64 = 30 * 60;
 
     let _ = app.emit(
         EVT_OUTPUT,
         OutputEvent {
             stream: "system",
-            line: "Waiting for worldserver to finish initialising…".into(),
+            line: format!(
+                "Waiting for worldserver to accept connections on 127.0.0.1:{WORLDSERVER_PORT}…"
+            ),
             transient: false,
         },
     );
 
     let mut elapsed = 0u64;
     loop {
-        let name = worldserver_container_name();
-        if let Some(name) = name {
+        if let Some(name) = worldserver_container_name() {
             if !is_container_running(&name) {
                 return Err(format!(
                     "worldserver container '{}' is not running",
                     name
                 ));
             }
-            if worldserver_is_ready(&name) {
+            if worldserver_accepts_connections() {
                 let _ = app.emit(
                     EVT_OUTPUT,
                     OutputEvent {
@@ -284,7 +320,7 @@ async fn wait_for_world_ready(app: &AppHandle, _install_path: &Path) -> Result<(
 
         if elapsed >= MAX_SECS {
             return Err(format!(
-                "worldserver did not report ready within {} seconds",
+                "worldserver did not accept connections within {} seconds",
                 MAX_SECS
             ));
         }
@@ -311,17 +347,16 @@ pub async fn start_server(
     let install_path = first_install_path().ok_or_else(|| {
         "no install detected — install a server before trying to start it".to_string()
     })?;
-    // --scale phpmyadmin=0 matches what install-wow-ui.sh + the gaming-mode
-    // launcher use: phpmyadmin is an optional debugging service we don't
-    // start by default to save resources.
-    spawn_compose(
-        "start",
-        app,
-        state,
-        &install_path,
-        &["up", "-d", "--scale", "phpmyadmin=0"],
-    )
-    .await
+
+    // phpmyadmin is an optional debugging service. When present we scale
+    // it to 0 so it doesn't eat resources; when absent (Playerbots fork)
+    // the flag would error, so skip it.
+    let mut args: Vec<&str> = vec!["up", "-d"];
+    if compose_has_service(&install_path, "phpmyadmin") {
+        args.extend(["--scale", "phpmyadmin=0"]);
+    }
+
+    spawn_compose("start", app, state, &install_path, &args).await
 }
 
 #[tauri::command]

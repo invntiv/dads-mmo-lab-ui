@@ -29,7 +29,13 @@ export type OnboardingChoices = {
 
 export type InstallLogLine = {
   id: number
-  stream: "stdout" | "stderr" | "system"
+  /**
+   * `stdout` / `stderr` are pipe sources from the spawned subprocess.
+   * `system` is for our own status messages (cancellation, cleanup, etc.)
+   * — rendered amber. `highlight` is for celebratory final-step messages
+   * like "AZEROTH IS READY!" — rendered bright purple.
+   */
+  stream: "stdout" | "stderr" | "system" | "highlight"
   text: string
 }
 
@@ -59,7 +65,7 @@ export type InstallLogEntry =
   | { kind: "section"; data: InstallSection }
 
 type InstallOutputEvent = {
-  stream: "stdout" | "stderr" | "system"
+  stream: "stdout" | "stderr" | "system" | "highlight"
   line: string
   transient: boolean
 }
@@ -104,7 +110,7 @@ export type ServerActionKind = "start" | "stop"
 export type ServerActionStatus = "idle" | "running" | "succeeded" | "failed"
 
 type ServerOutputEvent = {
-  stream: "stdout" | "stderr" | "system"
+  stream: "stdout" | "stderr" | "system" | "highlight"
   line: string
   transient: boolean
 }
@@ -484,6 +490,14 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
             e.payload.message ? ": " + e.payload.message : ""
           }.`
       setServerConsoleState((prev) => applyFinal(prev, "system", msg, nextId))
+      // The celebratory ready-line is the language users have seen in
+      // every guide and Gaming Mode launcher since v1.0 — they're looking
+      // for it. Only fire it for successful starts, not stops.
+      if (e.payload.success && e.payload.action === "start") {
+        setServerConsoleState((prev) =>
+          applyFinal(prev, "highlight", "AZEROTH IS READY! ⚔️", nextId)
+        )
+      }
       setServerActionStatus(e.payload.success ? "succeeded" : "failed")
       // Always re-check status — even a failed action may have changed
       // the worldserver's state (e.g. half-started containers).

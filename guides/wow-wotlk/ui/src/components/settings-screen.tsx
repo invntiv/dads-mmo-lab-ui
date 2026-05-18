@@ -16,6 +16,7 @@ import { listen } from "@tauri-apps/api/event"
 import { open as openDialog } from "@tauri-apps/plugin-dialog"
 
 import { Button } from "@/components/ui/button"
+import { ControllerSupportSection } from "@/components/controller-support-section"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
@@ -364,6 +365,8 @@ export function SettingsScreen() {
             onForget={forgetClient}
           />
         </Section>
+
+        <ControllerSupportSection />
       </div>
     </div>
   )

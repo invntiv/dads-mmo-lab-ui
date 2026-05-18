@@ -2,7 +2,7 @@ import type { CSSProperties } from "react"
 
 import { AhBotIntroOverlay } from "@/components/ahbot-intro-overlay"
 import { AppSidebar } from "@/components/app-sidebar"
-import { DemoDashboard } from "@/components/demo-dashboard"
+import { DashboardPlayerView } from "@/components/dashboard-player-view"
 import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
 import { InstallResumeBanner } from "@/components/install-resume-banner"
@@ -87,8 +87,8 @@ function AppShell() {
     mainContent = <SettingsScreen />
   } else if (showDashboard) {
     mainContent = (
-      // Realmlist reminder sits above the dashboard content. Self-
-      // dismissing per localStorage, so it doesn't pester on every visit.
+      // Banner row above the player paperdoll. Self-dismissing per
+      // localStorage, so they don't pester on every visit.
       <div className="flex flex-1 flex-col">
         <div className="space-y-3 px-4 pt-4 lg:px-6">
           {/* Resume banner only shows for partial installs (banner
@@ -99,7 +99,7 @@ function AppShell() {
           <InstallResumeBanner />
           {installComplete && <WowClientCard />}
         </div>
-        <DemoDashboard />
+        <DashboardPlayerView />
       </div>
     )
   } else {

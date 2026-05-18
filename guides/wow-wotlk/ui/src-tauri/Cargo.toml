@@ -31,6 +31,7 @@ base64 = "0.22.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 wow-mpq = "0.6.4"
 wow_dbc = { version = "0.3.0", features = ["wrath"] }
+zip = "8.6.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -24,6 +24,11 @@ import {
   useServerState,
   type GameCharacter,
 } from "@/components/server-state-context"
+import {
+  CLASS_COLORS,
+  CLASS_NAMES,
+  RACE_NAMES,
+} from "@/lib/wow-character-enums"
 import { cn } from "@/lib/utils"
 
 /**
@@ -37,56 +42,6 @@ import { cn } from "@/lib/utils"
  * NON-user character (AH Bot wizard, NPC actions, etc.); this card is
  * specifically the "act on MY character" anchor.
  */
-
-const RACE_NAMES: Record<number, string> = {
-  1: "Human",
-  2: "Orc",
-  3: "Dwarf",
-  4: "Night Elf",
-  5: "Undead",
-  6: "Tauren",
-  7: "Gnome",
-  8: "Troll",
-  10: "Blood Elf",
-  11: "Draenei",
-}
-
-const CLASS_NAMES: Record<number, string> = {
-  1: "Warrior",
-  2: "Paladin",
-  3: "Hunter",
-  4: "Rogue",
-  5: "Priest",
-  6: "Death Knight",
-  7: "Shaman",
-  8: "Mage",
-  9: "Warlock",
-  11: "Druid",
-}
-
-/**
- * Canonical WoW class colors (3.3.5a). Used to tint the class name in
- * the character card + selection dialog. Hex values match what the
- * game UI uses; Tailwind doesn't have exact equivalents so we drop to
- * arbitrary `[#hex]` classes.
- *
- * Source: every class CSS reference for WotLK (e.g. wowpedia
- * "Class colors"). Tuned slightly brighter than canonical for dark
- * backgrounds — pure #C79C6E for Warrior is muddy on dark, etc. —
- * but kept faithful where the canonical value already pops.
- */
-const CLASS_COLORS: Record<number, string> = {
-  1: "text-[#C79C6E]", // Warrior — tan
-  2: "text-[#F58CBA]", // Paladin — pink
-  3: "text-[#ABD473]", // Hunter — light green
-  4: "text-[#FFF569]", // Rogue — yellow
-  5: "text-[#FFFFFF]", // Priest — white
-  6: "text-[#C41F3B]", // Death Knight — red
-  7: "text-[#0070DE]", // Shaman — deep blue
-  8: "text-[#69CCF0]", // Mage — light blue
-  9: "text-[#9482C9]", // Warlock — purple
-  11: "text-[#FF7D0A]", // Druid — orange
-}
 
 export function GlobalCharacterCard() {
   const [open, setOpen] = React.useState(false)

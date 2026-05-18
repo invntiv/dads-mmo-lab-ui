@@ -12,6 +12,7 @@ import {
   useServerState,
   type GameCharacter,
 } from "@/components/server-state-context"
+import { CLASS_NAMES, RACE_NAMES } from "@/lib/wow-character-enums"
 import { cn } from "@/lib/utils"
 
 /**
@@ -26,31 +27,6 @@ import { cn } from "@/lib/utils"
  */
 
 const POLL_INTERVAL_MS = 5_000
-
-const RACE_NAMES: Record<number, string> = {
-  1: "Human",
-  2: "Orc",
-  3: "Dwarf",
-  4: "Night Elf",
-  5: "Undead",
-  6: "Tauren",
-  7: "Gnome",
-  8: "Troll",
-  10: "Blood Elf",
-  11: "Draenei",
-}
-const CLASS_NAMES: Record<number, string> = {
-  1: "Warrior",
-  2: "Paladin",
-  3: "Hunter",
-  4: "Rogue",
-  5: "Priest",
-  6: "Death Knight",
-  7: "Shaman",
-  8: "Mage",
-  9: "Warlock",
-  11: "Druid",
-}
 
 export function CharacterPicker({
   value,

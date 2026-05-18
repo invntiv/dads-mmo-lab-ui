@@ -4,6 +4,8 @@ use tauri_plugin_log::{Target, TargetKind};
 
 mod app_settings;
 mod client_assets;
+mod controller;
+mod dashboard;
 mod install;
 mod inventory;
 mod modules;
@@ -109,7 +111,14 @@ pub fn run() {
             app_settings::get_inventory_show_deprecated,
             app_settings::set_inventory_show_deprecated,
             app_settings::get_selected_character_guid,
-            app_settings::set_selected_character_guid
+            app_settings::set_selected_character_guid,
+            dashboard::get_character_paperdoll,
+            dashboard::gm_set_money,
+            dashboard::gm_set_health_pct,
+            dashboard::gm_set_power_pct,
+            dashboard::gm_revive,
+            controller::get_consoleportlk_status,
+            controller::install_consoleportlk
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {

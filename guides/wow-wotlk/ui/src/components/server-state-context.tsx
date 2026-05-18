@@ -19,12 +19,43 @@ export type InstallStatus =
   | "failed"
   | "cancelled"
 
+/**
+ * Per-module config the onboarding wizard knows how to ask about.
+ * Mirrors the Rust `AhBotConfig` / `IndividualProgressionConfig` / `ModuleConfig`
+ * shapes in install.rs — Tauri serializes camelCase here to snake_case in
+ * Rust via serde's rename_all. Anything left undefined falls back to the
+ * upstream `.conf.dist` default in install-wow-ui.sh.
+ */
+export type OnboardingAhBotConfig = {
+  itemsPerCycle?: number
+  /** 0 = long (1-3d), 1 = medium (1-24h), 2 = short (10-60min) per AC enum */
+  elapsingTimeClass?: 0 | 1 | 2
+  enableBuyer?: boolean
+  vendorItems?: boolean
+  professionItems?: boolean
+}
+
+export type OnboardingIpConfig = {
+  authenticDifficulty?: boolean
+  disableRdf?: boolean
+  dkRequiresTbc?: boolean
+}
+
+export type OnboardingModuleConfig = {
+  ahbot?: OnboardingAhBotConfig
+  ip?: OnboardingIpConfig
+}
+
 export type OnboardingChoices = {
   serverType: InstallVariant
   adminUser: string
   adminPass: string
   buildMethod?: "prebuilt" | "compile"
   force?: boolean
+  /** Module keys to clone + compile in (e.g. `["mod-ah-bot", "mod-solocraft"]`). */
+  modules?: string[]
+  /** Per-module config — only ones the user actually went through a config step for. */
+  moduleConfig?: OnboardingModuleConfig
 }
 
 export type InstallLogLine = {
@@ -551,6 +582,8 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
             adminUser: choices.adminUser,
             adminPass: choices.adminPass,
             force: choices.force ?? false,
+            modules: choices.modules ?? [],
+            moduleConfig: choices.moduleConfig ?? {},
           },
         })
       } catch (err) {

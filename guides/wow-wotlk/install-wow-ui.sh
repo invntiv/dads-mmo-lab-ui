@@ -81,6 +81,184 @@ section_start() { echo "::DML::SECTION::START::$1::"; }
 section_end()   { echo "::DML::SECTION::END::"; }
 
 # ─────────────────────────────────────────
+# USER-MODULE REGISTRY
+# ─────────────────────────────────────────
+# Mirror of MODULE_REGISTRY in manage-wow-modules.sh:89-98 — the eight
+# add-on modules the UI exposes during onboarding. Format: key|url.
+# Filenames of .conf.dist files are discovered at install time (each
+# module owns the naming convention), so no second column needed.
+declare -a USER_MODULE_REGISTRY=(
+    "mod-ah-bot|https://github.com/azerothcore/mod-ah-bot.git"
+    "mod-solocraft|https://github.com/azerothcore/mod-solocraft.git"
+    "mod-aoe-loot|https://github.com/azerothcore/mod-aoe-loot.git"
+    "mod-learn-spells|https://github.com/azerothcore/mod-learn-spells.git"
+    "mod-individual-progression|https://github.com/ZhengPeiRu21/mod-individual-progression.git"
+    "mod-autobalance|https://github.com/azerothcore/mod-autobalance.git"
+    "mod-transmog|https://github.com/azerothcore/mod-transmog.git"
+    "mod-1v1-arena|https://github.com/azerothcore/mod-1v1-arena.git"
+)
+
+# Look up a module URL by key. Returns empty string if not found —
+# unknown keys are skipped (don't fail the install).
+user_module_url() {
+    local key="$1" entry k url
+    for entry in "${USER_MODULE_REGISTRY[@]}"; do
+        IFS='|' read -r k url <<< "$entry"
+        if [ "$k" = "$key" ]; then
+            echo "$url"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Replace or append a key=value line in a conf file. Used to apply the
+# UI's per-module overrides on top of the upstream `.conf.dist` copy.
+# Match is exact: leading whitespace + key + optional whitespace + `=`.
+# If the key exists, the line is rewritten; otherwise appended.
+conf_set() {
+    local file="$1" key="$2" value="$3"
+    if [ ! -f "$file" ]; then
+        print_warning "conf_set: $file missing — skipping $key"
+        return 1
+    fi
+    # Escape for sed: only `|` is unsafe in our delimiter; values are
+    # ints / floats / 0|1 so this is sufficient.
+    local escaped_value="${value//|/\\|}"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${escaped_value}|" "$file"
+    else
+        echo "${key} = ${value}" >> "$file"
+    fi
+}
+
+# Per-module conf writer. For each module the UI asks about, translate
+# the relevant DML_MOD_* env vars into conf overrides. Modules with no
+# UI knobs (or with env vars unset) get only the `.conf.dist` defaults.
+apply_module_overrides() {
+    local key="$1" module_dir="$2" conf_target_dir="$3"
+    local conf_dist
+    # Most modules ship a single .conf.dist; find it.
+    conf_dist=$(find "$module_dir/conf" -maxdepth 1 -name "*.conf.dist" 2>/dev/null | head -1)
+    if [ -z "$conf_dist" ]; then
+        # Some modules (aoe-loot, autobalance, etc.) keep dists in
+        # subdirs. Fall back to a recursive find.
+        conf_dist=$(find "$module_dir/conf" -name "*.conf.dist" 2>/dev/null | head -1)
+    fi
+    if [ -z "$conf_dist" ]; then
+        print_info "$key: no .conf.dist found (module has no configurable conf)"
+        return 0
+    fi
+
+    local basename_dist conf_active
+    basename_dist=$(basename "$conf_dist")
+    # Drop the .dist suffix: `mod_ahbot.conf.dist` -> `mod_ahbot.conf`
+    conf_active="$conf_target_dir/${basename_dist%.dist}"
+    mkdir -p "$conf_target_dir"
+    cp "$conf_dist" "$conf_active"
+
+    case "$key" in
+        mod-ah-bot)
+            # Onboarding knobs (Phase 1 in MODULES_PLAN.md). Unset vars
+            # mean "leave the .conf.dist default", so we only `conf_set`
+            # the ones the UI actually passed.
+            [ -n "$DML_MOD_AHBOT_ITEMS_PER_CYCLE" ]      && conf_set "$conf_active" "AuctionHouseBot.ItemsPerCycle"      "$DML_MOD_AHBOT_ITEMS_PER_CYCLE"
+            [ -n "$DML_MOD_AHBOT_ELAPSING_TIME_CLASS" ]  && conf_set "$conf_active" "AuctionHouseBot.ElapsingTimeClass"  "$DML_MOD_AHBOT_ELAPSING_TIME_CLASS"
+            [ -n "$DML_MOD_AHBOT_ENABLE_BUYER" ]         && conf_set "$conf_active" "AuctionHouseBot.EnableBuyer"        "$DML_MOD_AHBOT_ENABLE_BUYER"
+            [ -n "$DML_MOD_AHBOT_VENDOR_ITEMS" ]         && conf_set "$conf_active" "AuctionHouseBot.VendorItems"        "$DML_MOD_AHBOT_VENDOR_ITEMS"
+            [ -n "$DML_MOD_AHBOT_PROFESSION_ITEMS" ]     && conf_set "$conf_active" "AuctionHouseBot.ProfessionItems"    "$DML_MOD_AHBOT_PROFESSION_ITEMS"
+            # AH Bot character is deferred to the post-install wizard —
+            # leave Account/GUID at 0 so the bot loads but stays inert
+            # until the user creates the character and runs that wizard.
+            conf_set "$conf_active" "AuctionHouseBot.Account"       "0"
+            conf_set "$conf_active" "AuctionHouseBot.GUID"          "0"
+            conf_set "$conf_active" "AuctionHouseBot.GUIDs"         "\"0\""
+            conf_set "$conf_active" "AuctionHouseBot.EnableSeller"  "0"
+            print_info "AH Bot: bot character setup deferred — finish via Modules page after first login"
+            ;;
+        mod-individual-progression)
+            if [ "${DML_MOD_IP_AUTHENTIC_DIFFICULTY:-0}" = "1" ]; then
+                conf_set "$conf_active" "IndividualProgression.VanillaPowerAdjustment"   "0.6"
+                conf_set "$conf_active" "IndividualProgression.VanillaHealingAdjustment" "0.6"
+                conf_set "$conf_active" "IndividualProgression.TBCPowerAdjustment"       "0.6"
+                conf_set "$conf_active" "IndividualProgression.TBCHealingAdjustment"     "0.6"
+            fi
+            if [ -n "$DML_MOD_IP_DISABLE_RDF" ]; then
+                conf_set "$conf_active" "IndividualProgression.DisableRDF" "$DML_MOD_IP_DISABLE_RDF"
+            fi
+            # DK gating: stored as enum 0 (disabled) or 13 (require TBC).
+            if [ -n "$DML_MOD_IP_DK_REQUIRES_TBC" ]; then
+                if [ "$DML_MOD_IP_DK_REQUIRES_TBC" = "1" ]; then
+                    conf_set "$conf_active" "IndividualProgression.DeathKnightUnlockProgression" "13"
+                else
+                    conf_set "$conf_active" "IndividualProgression.DeathKnightUnlockProgression" "0"
+                fi
+            fi
+            ;;
+        *)
+            # Other modules have no install-time overrides — defaults
+            # are correct per MODULES_PLAN.md Phase 1. Power-user
+            # toggles get exposed on the post-install Modules page.
+            :
+            ;;
+    esac
+
+    print_success "Wrote $(basename "$conf_active")"
+}
+
+# Clone every module listed in DML_MODULES_ADD into <install>/modules/
+# and write each one's conf. Anything in <install>/modules/ before the
+# initial `docker compose up -d --build` is compiled into the worldserver
+# image automatically — no separate rebuild needed.
+install_user_modules() {
+    if [ -z "${DML_MODULES_ADD:-}" ]; then
+        return 0
+    fi
+    if [ "$SERVER_TYPE" != "playerbots" ]; then
+        # Base / NPCBots use prebuilt images — modules can't be compiled
+        # in. The Modules page in the UI blocks this too, but if we got
+        # here it means someone passed env vars regardless. Skip cleanly.
+        print_warning "DML_MODULES_ADD ignored: modules only supported on playerbots installs"
+        return 0
+    fi
+    print_step "Installing optional modules"
+
+    mkdir -p "$SERVER_DIR/modules"
+    # The conf target dir is bind-mounted into the container at
+    # /azerothcore/env/dist/etc — AC reads module configs from
+    # /azerothcore/env/dist/etc/modules/<name>.conf.
+    local conf_target_dir="$SERVER_DIR/env/dist/etc/modules"
+    mkdir -p "$conf_target_dir"
+
+    local IFS=','
+    local key url
+    for key in $DML_MODULES_ADD; do
+        # Trim incidental whitespace from the comma-separated list.
+        key="${key// /}"
+        [ -z "$key" ] && continue
+
+        url=$(user_module_url "$key") || {
+            print_warning "Unknown module key: $key (skipping)"
+            continue
+        }
+
+        if [ -d "$SERVER_DIR/modules/$key" ]; then
+            print_info "$key already present — skipping clone"
+        else
+            print_info "Cloning $key..."
+            if ! git clone --progress --depth 1 "$url" "$SERVER_DIR/modules/$key"; then
+                print_error "Clone failed for $key (continuing without it)"
+                continue
+            fi
+        fi
+
+        apply_module_overrides "$key" "$SERVER_DIR/modules/$key" "$conf_target_dir"
+    done
+
+    print_success "Modules ready — they will be compiled into the worldserver image"
+}
+
+# ─────────────────────────────────────────
 # RESOLVE INPUTS
 # ─────────────────────────────────────────
 SERVER_TYPE="${DML_SERVER_TYPE:-}"
@@ -422,6 +600,13 @@ services:
       context: .
       target: client-data
 OVERRIDE
+
+            # Clone + configure user-selected modules BEFORE the build so
+            # they get compiled into the same worldserver image. Free
+            # optimisation — adding modules now costs nothing extra
+            # versus adding them post-install (which would force a 30-90
+            # min rebuild). See MODULES_PLAN.md §2.
+            install_user_modules
 
             print_info "Compiling Playerbots (2-4 hours)..."
             cd "$SERVER_DIR" || exit 1

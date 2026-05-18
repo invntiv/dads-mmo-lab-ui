@@ -37,9 +37,29 @@ type ModuleKey =
   | "mod-aoe-loot"
   | "mod-learn-spells"
 
+// Per-module config shapes. Only ahbot and ip have onboarding-worthy
+// knobs (see MODULES_PLAN.md Phase 1) — every other module is a
+// zero-question install.
+type AhBotConfig = {
+  itemsPerCycle: number
+  /** 0 = long (1-3d), 1 = medium (1-24h), 2 = short (10-60min). */
+  elapsingTimeClass: 0 | 1 | 2
+  enableBuyer: boolean
+  vendorItems: boolean
+  professionItems: boolean
+}
+
+type IpConfig = {
+  authenticDifficulty: boolean
+  disableRdf: boolean
+  dkRequiresTbc: boolean
+}
+
 type FormState = {
   serverType: ServerType
   modules: Record<ModuleKey, boolean>
+  ahbot: AhBotConfig
+  ip: IpConfig
   adminUser: string
   adminPass: string
 }
@@ -55,6 +75,22 @@ const DEFAULT_STATE: FormState = {
     "mod-1v1-arena": false,
     "mod-aoe-loot": false,
     "mod-learn-spells": false,
+  },
+  // Defaults pulled from mod_ahbot.conf.dist (see MODULES_PLAN.md §Phase 1).
+  ahbot: {
+    itemsPerCycle: 200,
+    elapsingTimeClass: 1,
+    enableBuyer: false,
+    vendorItems: false,
+    professionItems: false,
+  },
+  // Defaults preserve a "vanilla feel without difficulty tweaks" — the
+  // module's intended design. dkRequiresTbc on by default per module
+  // upstream.
+  ip: {
+    authenticDifficulty: false,
+    disableRdf: false,
+    dkRequiresTbc: true,
   },
   adminUser: "admin",
   adminPass: "admin",
@@ -76,24 +112,62 @@ const MODULES: {
   { key: "mod-learn-spells", label: "Learn Spells on Levelup", blurb: "Skip the trainer trips.", Icon: BookOpenIcon },
 ]
 
-const STEPS = [
-  {
+/**
+ * Static step identifiers. The wizard's actual step list is built
+ * dynamically per render based on selected modules — modules with
+ * onboarding-worthy config (currently AH Bot, IP) add their step to the
+ * sequence; zero-question modules (Solocraft, AutoBalance, etc.) don't.
+ */
+type StepId =
+  | "server-type"
+  | "modules"
+  | "ahbot-config"
+  | "ip-config"
+  | "admin"
+  | "summary"
+
+type StepDef = { id: StepId; title: string; description: string }
+
+const STEP_DEFS: Record<StepId, Omit<StepDef, "id">> = {
+  "server-type": {
     title: "Choose your server...",
-    description: "Which AzerothCore variant do you want to install? You can change modules later, but the variant is baked in at install time.",
+    description:
+      "Which AzerothCore variant do you want to install? You can change modules later, but the variant is baked in at install time.",
   },
-  {
+  modules: {
     title: "Pick your modules",
-    description: "Optional add-ons. Pre-selected ones are the most-loved defaults. You can add or remove modules later from the management panel.",
+    description:
+      "Optional add-ons. Pre-selected ones are the most-loved defaults. Modules with configurable settings will get a follow-up step.",
   },
-  {
+  "ahbot-config": {
+    title: "Auction House Bot",
+    description:
+      "Tune how busy the bot keeps your auction house. Sensible defaults pre-filled — you can change these later from the Modules page.",
+  },
+  "ip-config": {
+    title: "Individual Progression",
+    description:
+      "This module changes WoW fundamentally — characters start in Vanilla and unlock TBC then WotLK by clearing raids. Pick how authentic you want the experience.",
+  },
+  admin: {
     title: "Admin account",
-    description: "This account has full GM powers. You'll use it to log into WoW and to send GM commands from this app.",
+    description:
+      "This account has full GM powers. You'll use it to log into WoW and to send GM commands from this app.",
   },
-  {
+  summary: {
     title: "Ready to install",
-    description: "Review your choices. Installing Playerbots compiles AzerothCore from source — plan for 2–4 hours and keep your device plugged in.",
+    description:
+      "Review your choices. Installing Playerbots compiles AzerothCore from source — plan for 2–4 hours and keep your device plugged in.",
   },
-] as const
+}
+
+function buildSteps(state: FormState): StepDef[] {
+  const order: StepId[] = ["server-type", "modules"]
+  if (state.modules["mod-ah-bot"]) order.push("ahbot-config")
+  if (state.modules["mod-individual-progression"]) order.push("ip-config")
+  order.push("admin", "summary")
+  return order.map((id) => ({ id, ...STEP_DEFS[id] }))
+}
 
 export function InstallOnboarding({
   open,
@@ -117,28 +191,46 @@ export function InstallOnboarding({
     }
   }, [open])
 
-  const current = STEPS[step]
-  const isLast = step === STEPS.length - 1
+  // Step list is recomputed each render so adding / removing a module
+  // checkbox in step 2 immediately changes which follow-up steps appear.
+  const steps = React.useMemo(() => buildSteps(state), [state])
+  // Clamp `step` if the user de-selected a module and the current step
+  // no longer exists in the list (e.g. they were on ahbot-config and
+  // unchecked AH Bot via Back -> Modules).
+  const safeStep = Math.min(step, steps.length - 1)
+  const current = steps[safeStep]
+  const isLast = safeStep === steps.length - 1
   const selectedModules = MODULES.filter((m) => state.modules[m.key])
 
   const advance = () => {
     if (isLast) {
-      // Close the modal and hand off to the install console. Modules are
-      // recorded in the form state but not passed to the script — the
-      // installer keeps the same flow as install-wow.sh, which defers
-      // module installation to the post-install module manager.
+      // Close the modal and hand off to the install console. The install
+      // script clones every selected module into <install>/modules/
+      // before the worldserver build, so they get compiled in free —
+      // no separate rebuild step. AH Bot's bot-character setup remains
+      // deferred to the post-install Modules page (it needs a real
+      // character that can only be created via the WoW client).
       onOpenChange(false)
       void startInstall({
         serverType: state.serverType,
         adminUser: state.adminUser,
         adminPass: state.adminPass,
-        // playerbots always compiles; npcbots defaults to prebuilt in the
-        // script if omitted. Leaving buildMethod undefined lets the script
-        // pick its own default.
+        modules: (Object.keys(state.modules) as ModuleKey[]).filter(
+          (k) => state.modules[k]
+        ),
+        // Only forward config for modules the user actually selected —
+        // otherwise we'd send AH Bot config for an install that doesn't
+        // include AH Bot.
+        moduleConfig: {
+          ahbot: state.modules["mod-ah-bot"] ? state.ahbot : undefined,
+          ip: state.modules["mod-individual-progression"] ? state.ip : undefined,
+        },
       })
       return
     }
-    setStep((s) => s + 1)
+    // Use safeStep, not raw step, so toggling a module in step 2 that
+    // shrinks the step list doesn't leave us stranded at an OOB index.
+    setStep(safeStep + 1)
   }
 
   return (
@@ -146,9 +238,9 @@ export function InstallOnboarding({
       <DialogContent className="grid h-140 grid-cols-[2fr_3fr] gap-0 overflow-hidden rounded-xl p-0 text-sm sm:max-w-225" aria-description="onboarding options">
         {/* LEFT — title, description, step dots, back */}
         <div className="flex flex-col bg-muted/40 p-6">
-          {step > 0 ? (
+          {safeStep > 0 ? (
             <button
-              onClick={() => setStep((s) => s - 1)}
+              onClick={() => setStep(Math.max(0, safeStep - 1))}
               className="inline-flex items-center gap-1 self-start text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               <CaretLeftIcon className="size-3.5" />
@@ -165,25 +257,45 @@ export function InstallOnboarding({
             <p className="text-sm text-muted-foreground">{current.description}</p>
           </div>
 
-          <StepDots total={STEPS.length} current={step} />
+          <StepDots total={steps.length} current={safeStep} />
         </div>
 
         {/* RIGHT — form for the current step + advance button */}
         <div className="flex min-h-0 flex-col p-6">
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            {step === 0 && (
+          {/*
+            Step-content scroll container. Shared by every step on the
+            right side of the modal. `pb-3` guarantees the last item in
+            any overflowing step (e.g. AH Bot's five-checkbox form) gets
+            visible breathing room when scrolled to the bottom — without
+            it, the final card's border butts right up against the
+            scroll-area edge and looks clipped.
+          */}
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 pb-3">
+            {current.id === "server-type" && (
               <ServerTypeStep
                 value={state.serverType}
                 onChange={(serverType) => setState((s) => ({ ...s, serverType }))}
               />
             )}
-            {step === 1 && (
+            {current.id === "modules" && (
               <ModulesStep
                 value={state.modules}
                 onChange={(modules) => setState((s) => ({ ...s, modules }))}
               />
             )}
-            {step === 2 && (
+            {current.id === "ahbot-config" && (
+              <AhBotConfigStep
+                value={state.ahbot}
+                onChange={(ahbot) => setState((s) => ({ ...s, ahbot }))}
+              />
+            )}
+            {current.id === "ip-config" && (
+              <IpConfigStep
+                value={state.ip}
+                onChange={(ip) => setState((s) => ({ ...s, ip }))}
+              />
+            )}
+            {current.id === "admin" && (
               <AdminStep
                 user={state.adminUser}
                 pass={state.adminPass}
@@ -192,7 +304,9 @@ export function InstallOnboarding({
                 }
               />
             )}
-            {step === 3 && <SummaryStep state={state} selectedModules={selectedModules} />}
+            {current.id === "summary" && (
+              <SummaryStep state={state} selectedModules={selectedModules} />
+            )}
           </div>
 
           <Button size="lg" className="mt-4 w-full" onClick={advance}>
@@ -407,6 +521,178 @@ function AdminStep({
   )
 }
 
+function AhBotConfigStep({
+  value,
+  onChange,
+}: {
+  value: AhBotConfig
+  onChange: (next: AhBotConfig) => void
+}) {
+  // 0 = long, 1 = medium, 2 = short per AC enum. UI presents the
+  // human-readable order short -> medium -> long which is more natural.
+  const durationOptions: { val: 0 | 1 | 2; label: string; blurb: string }[] = [
+    { val: 2, label: "Short", blurb: "10-60 min" },
+    { val: 1, label: "Medium", blurb: "1-24 hours (default)" },
+    { val: 0, label: "Long", blurb: "1-3 days" },
+  ]
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+        After install you'll log into WoW once and create a bot character.
+        The Modules page will walk you through it — until then the AH Bot is
+        installed but inert.
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="ahbot-items-per-cycle">Auctions per cycle</Label>
+        <Input
+          id="ahbot-items-per-cycle"
+          type="number"
+          min={50}
+          max={2000}
+          step={10}
+          value={value.itemsPerCycle}
+          onChange={(e) => {
+            const n = Number(e.target.value)
+            if (Number.isFinite(n)) onChange({ ...value, itemsPerCycle: n })
+          }}
+        />
+        <p className="text-xs text-muted-foreground">
+          How many items the bot lists per cycle. Higher = busier AH, more CPU.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>Auction duration</Label>
+        <RadioGroup
+          value={String(value.elapsingTimeClass)}
+          onValueChange={(v) =>
+            onChange({
+              ...value,
+              elapsingTimeClass: Number(v) as 0 | 1 | 2,
+            })
+          }
+          className="gap-2"
+        >
+          {durationOptions.map((opt) => (
+            <Label
+              key={opt.val}
+              htmlFor={`ahbot-duration-${opt.val}`}
+              className="flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-accent has-data-[state=checked]:border-primary has-data-[state=checked]:bg-accent"
+            >
+              <RadioGroupItem
+                id={`ahbot-duration-${opt.val}`}
+                value={String(opt.val)}
+              />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-foreground">
+                  {opt.label}
+                </div>
+                <div className="text-xs text-muted-foreground">{opt.blurb}</div>
+              </div>
+            </Label>
+          ))}
+        </RadioGroup>
+      </div>
+
+      <ToggleRow
+        id="ahbot-buyer"
+        label="Bot also buys from players"
+        blurb="The bot bids on player listings (creates demand). Off by default."
+        checked={value.enableBuyer}
+        onChange={(v) => onChange({ ...value, enableBuyer: v })}
+      />
+      <ToggleRow
+        id="ahbot-vendor"
+        label="Include vendor-purchasable items"
+        blurb="Adds vendor goods to the AH (more variety, less authentic)."
+        checked={value.vendorItems}
+        onChange={(v) => onChange({ ...value, vendorItems: v })}
+      />
+      <ToggleRow
+        id="ahbot-profession"
+        label="Include profession materials"
+        blurb="Herbs, ores, leather, etc."
+        checked={value.professionItems}
+        onChange={(v) => onChange({ ...value, professionItems: v })}
+      />
+    </div>
+  )
+}
+
+function IpConfigStep({
+  value,
+  onChange,
+}: {
+  value: IpConfig
+  onChange: (next: IpConfig) => void
+}) {
+  return (
+    <div className="space-y-5">
+      <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-blue-700 dark:text-blue-400">
+        This module changes WoW fundamentally — each character starts in
+        Vanilla and must clear raids to unlock TBC, then WotLK. The journey,
+        not the destination.
+      </div>
+
+      <ToggleRow
+        id="ip-authentic"
+        label="Authentic difficulty"
+        blurb="Reduces player power and healing to 60% in Vanilla and TBC. Recommended for solo play with Playerbots."
+        checked={value.authenticDifficulty}
+        onChange={(v) => onChange({ ...value, authenticDifficulty: v })}
+      />
+      <ToggleRow
+        id="ip-disable-rdf"
+        label="Lock Random Dungeon Finder until WotLK"
+        blurb="Forces forming groups manually until late-game."
+        checked={value.disableRdf}
+        onChange={(v) => onChange({ ...value, disableRdf: v })}
+      />
+      <ToggleRow
+        id="ip-dk-tbc"
+        label="Death Knights require completing TBC first"
+        blurb="Module default — DKs only unlock after the character clears TBC content. Disable to make DKs available from level 1."
+        checked={value.dkRequiresTbc}
+        onChange={(v) => onChange({ ...value, dkRequiresTbc: v })}
+      />
+    </div>
+  )
+}
+
+function ToggleRow({
+  id,
+  label,
+  blurb,
+  checked,
+  onChange,
+}: {
+  id: string
+  label: string
+  blurb: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <Label
+      htmlFor={id}
+      className="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 transition-colors hover:bg-accent has-data-[state=checked]:border-primary/60 has-data-[state=checked]:bg-accent/50"
+    >
+      <Checkbox
+        id={id}
+        checked={checked}
+        onCheckedChange={(v) => onChange(v === true)}
+        className="mt-0.5"
+      />
+      <div className="flex-1 space-y-0.5">
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        <p className="text-xs text-muted-foreground">{blurb}</p>
+      </div>
+    </Label>
+  )
+}
+
 function SummaryStep({
   state,
   selectedModules,
@@ -414,6 +700,36 @@ function SummaryStep({
   state: FormState
   selectedModules: { key: ModuleKey; label: string }[]
 }) {
+  // Pull the configured-knob summary string per module, when relevant.
+  // Modules without onboarding config return null and just render as a
+  // plain badge.
+  const moduleConfigSummary = (key: ModuleKey): string | null => {
+    if (key === "mod-ah-bot") {
+      const durationLabel =
+        state.ahbot.elapsingTimeClass === 2
+          ? "short"
+          : state.ahbot.elapsingTimeClass === 0
+            ? "long"
+            : "medium"
+      const extras = [
+        state.ahbot.enableBuyer ? "buyer on" : null,
+        state.ahbot.vendorItems ? "vendor items" : null,
+        state.ahbot.professionItems ? "profession items" : null,
+      ].filter(Boolean) as string[]
+      const extrasStr = extras.length > 0 ? ` · ${extras.join(", ")}` : ""
+      return `${state.ahbot.itemsPerCycle}/cycle · ${durationLabel} duration${extrasStr}`
+    }
+    if (key === "mod-individual-progression") {
+      const bits = [
+        state.ip.authenticDifficulty ? "authentic difficulty" : null,
+        state.ip.disableRdf ? "no RDF until WotLK" : null,
+        state.ip.dkRequiresTbc ? "DKs gated by TBC" : "DKs available at start",
+      ].filter(Boolean) as string[]
+      return bits.join(" · ")
+    }
+    return null
+  }
+
   return (
     <div className="space-y-4">
       <SummaryRow label="Server">Playerbots</SummaryRow>
@@ -426,12 +742,22 @@ function SummaryStep({
         {selectedModules.length === 0 ? (
           <span className="text-muted-foreground">None</span>
         ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {selectedModules.map((m) => (
-              <Badge key={m.key} variant="secondary" className="font-normal">
-                {m.label}
-              </Badge>
-            ))}
+          <div className="space-y-1.5">
+            {selectedModules.map((m) => {
+              const summary = moduleConfigSummary(m.key)
+              return (
+                <div key={m.key} className="flex flex-col gap-0.5">
+                  <Badge variant="secondary" className="w-fit font-normal">
+                    {m.label}
+                  </Badge>
+                  {summary && (
+                    <span className="pl-1 text-[11px] text-muted-foreground">
+                      {summary}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </SummaryRow>
@@ -440,7 +766,8 @@ function SummaryStep({
       </SummaryRow>
       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
         Playerbots compiles AzerothCore from source. Expect 2–4 hours on a Steam Deck.
-        Keep your device plugged in and don't let it sleep.
+        Modules are compiled into the same build — no extra time. Keep your
+        device plugged in and don't let it sleep.
       </div>
     </div>
   )

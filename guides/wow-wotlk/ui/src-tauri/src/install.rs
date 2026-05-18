@@ -27,6 +27,37 @@ pub struct DetectionResult {
     pub installs: Vec<DetectedInstall>,
 }
 
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AhBotConfig {
+    pub items_per_cycle: Option<u32>,
+    pub elapsing_time_class: Option<u8>, // 0=long, 1=medium, 2=short per AC enum
+    pub enable_buyer: Option<bool>,
+    pub vendor_items: Option<bool>,
+    pub profession_items: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct IndividualProgressionConfig {
+    pub authentic_difficulty: Option<bool>,
+    pub disable_rdf: Option<bool>,
+    pub dk_requires_tbc: Option<bool>,
+}
+
+/// Subset of per-module config the wizard knows how to ask about during
+/// onboarding. Anything not set here uses the upstream `.conf.dist`
+/// defaults. Post-install reconfigure (Modules page) extends this to
+/// the power-user knobs.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleConfig {
+    #[serde(default)]
+    pub ahbot: Option<AhBotConfig>,
+    #[serde(default)]
+    pub ip: Option<IndividualProgressionConfig>,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallRequest {
@@ -39,6 +70,15 @@ pub struct InstallRequest {
     pub admin_pass: String,
     #[serde(default)]
     pub force: bool,
+    /// Module keys to install (e.g. `["mod-ah-bot", "mod-solocraft"]`).
+    /// Translated to `DML_MODULES_ADD` (comma-separated) before spawn.
+    #[serde(default)]
+    pub modules: Vec<String>,
+    /// Per-module config from the wizard. Each Some(...) variant maps to
+    /// a set of `DML_MOD_*` env vars; None means "module not configured
+    /// or not selected — use defaults".
+    #[serde(default)]
+    pub module_config: ModuleConfig,
 }
 
 fn default_admin_user() -> String {
@@ -206,6 +246,48 @@ pub async fn start_install(
 
     if let Some(build_method) = &request.build_method {
         cmd.env("DML_BUILD_METHOD", build_method);
+    }
+
+    // ── Module env vars ─────────────────────────────────────────────
+    // Comma-separated list of module keys the user picked in the wizard.
+    // Empty / unset = no modules. Script handles both gracefully.
+    if !request.modules.is_empty() {
+        cmd.env("DML_MODULES_ADD", request.modules.join(","));
+    }
+
+    // Per-module config — only set env vars the user actually picked
+    // values for. The script reads each var with `${VAR:-}` so unset
+    // means "use the .conf.dist default".
+    if let Some(ah) = &request.module_config.ahbot {
+        if let Some(v) = ah.items_per_cycle {
+            cmd.env("DML_MOD_AHBOT_ITEMS_PER_CYCLE", v.to_string());
+        }
+        if let Some(v) = ah.elapsing_time_class {
+            cmd.env("DML_MOD_AHBOT_ELAPSING_TIME_CLASS", v.to_string());
+        }
+        if let Some(v) = ah.enable_buyer {
+            cmd.env("DML_MOD_AHBOT_ENABLE_BUYER", if v { "1" } else { "0" });
+        }
+        if let Some(v) = ah.vendor_items {
+            cmd.env("DML_MOD_AHBOT_VENDOR_ITEMS", if v { "1" } else { "0" });
+        }
+        if let Some(v) = ah.profession_items {
+            cmd.env("DML_MOD_AHBOT_PROFESSION_ITEMS", if v { "1" } else { "0" });
+        }
+    }
+    if let Some(ip) = &request.module_config.ip {
+        if let Some(v) = ip.authentic_difficulty {
+            cmd.env(
+                "DML_MOD_IP_AUTHENTIC_DIFFICULTY",
+                if v { "1" } else { "0" },
+            );
+        }
+        if let Some(v) = ip.disable_rdf {
+            cmd.env("DML_MOD_IP_DISABLE_RDF", if v { "1" } else { "0" });
+        }
+        if let Some(v) = ip.dk_requires_tbc {
+            cmd.env("DML_MOD_IP_DK_REQUIRES_TBC", if v { "1" } else { "0" });
+        }
     }
 
     // Put the script in its own process group so cancel can SIGTERM the

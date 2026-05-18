@@ -6,6 +6,7 @@ import { DemoDashboard } from "@/components/demo-dashboard"
 import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
 import { ModulesScreen } from "@/components/modules-screen"
+import { RealmlistReminderCard } from "@/components/realmlist-reminder-card"
 import { ServerControlScreen } from "@/components/server-control-screen"
 import {
   ServerStateProvider,
@@ -68,7 +69,16 @@ function AppShell() {
   } else if (showModules) {
     mainContent = <ModulesScreen />
   } else if (showDashboard) {
-    mainContent = <DemoDashboard />
+    mainContent = (
+      // Realmlist reminder sits above the dashboard content. Self-
+      // dismissing per localStorage, so it doesn't pester on every visit.
+      <div className="flex flex-1 flex-col">
+        <div className="px-4 pt-4 lg:px-6">
+          <RealmlistReminderCard />
+        </div>
+        <DemoDashboard />
+      </div>
+    )
   } else {
     mainContent = <WelcomeScreen />
   }

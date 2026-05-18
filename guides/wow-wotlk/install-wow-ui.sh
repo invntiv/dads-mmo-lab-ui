@@ -587,6 +587,14 @@ services:
       AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
       AC_AI_PLAYERBOT_MIN_RANDOM_BOTS: "50"
       AC_AI_PLAYERBOT_MAX_RANDOM_BOTS: "200"
+      # SOAP is the long-term GM command channel for the UI. Enabled at
+      # install so the app can later issue commands like `additem`,
+      # `teleport`, `account set gmlevel`, etc. via HTTP+XML on port 7878
+      # using the ADMIN account bootstrap_accounts_and_ahbot creates.
+      # Without IP=0.0.0.0 SOAP binds to 127.0.0.1 INSIDE the container,
+      # unreachable from the host even though the port is published.
+      AC_SOAP_ENABLED: "1"
+      AC_SOAP_IP: "0.0.0.0"
   ac-authserver:
     build:
       context: .
@@ -665,6 +673,164 @@ wait_for_server() {
 }
 
 # ─────────────────────────────────────────
+# BOOTSTRAP ACCOUNTS + AHBOT (post-server-ready)
+# ─────────────────────────────────────────
+# Pattern locked in 2026-05-18: at install time, all GM account
+# bootstrap goes through direct SRP6 + SQL writes. Per-request GM
+# operations during the app's runtime will go through SOAP (port 7878)
+# using the admin account we create here. See the dev log for the full
+# decision rationale (originally evaluated pty-based command piping and
+# rejected as timing-fragile).
+#
+# Inputs:
+#   DML_ADMIN_USER, DML_ADMIN_PASS — from onboarding wizard. Default to
+#       "admin"/"admin" if not set so a fresh install always has a
+#       known account the user can log into WoW with.
+#
+# What this function does:
+#   1. Computes SRP6 salt+verifier for the user-chosen admin credentials
+#      via embedded Python (algorithm verified against AC source).
+#   2. SQL INSERTs the admin account into acore_auth.account with
+#      gmlevel 3 in account_access.
+#   3. Generates a random password for an internal AHBOT account, creates
+#      it the same way.
+#   4. SQL INSERTs one minimal character row on the AHBOT account — AHB
+#      needs at least one character row to exist for the bot's gBotsId
+#      lookup (see modules/mod-ah-bot/src/AuctionHouseBotWorldScript.cpp).
+#   5. Rewrites mod_ahbot.conf with the new account_id and
+#      EnableSeller=1 — the bot becomes active on next worldserver
+#      restart.
+#   6. Soft-restarts the worldserver so the conf change takes effect.
+
+# Helper: docker exec into ac-database and run a SQL statement.
+# The `-N -B` flags give tab-separated output without column headers,
+# easier to parse from shell. The `2>/dev/null` suppresses MySQL's
+# "Using a password on the command line interface can be insecure"
+# warning that goes to stderr on every call.
+sql_exec() {
+    local query="$1"
+    docker exec -i ac-database mysql -uroot -ppassword -N -B -e "$query" 2>/dev/null
+}
+
+# Compute SRP6 salt+verifier for (username, password). Prints two
+# uppercase hex strings, space-separated. Mirrors AC's
+# SRP6::MakeRegistrationData (src/common/Cryptography/Authentication/SRP6.cpp).
+# Verified against accounts created via AC's own `account create`.
+srp6_compute() {
+    local user="$1" pass="$2"
+    python3 - "$user" "$pass" <<'PYEOF'
+import hashlib, secrets, sys
+# Canonical WoW SRP6 modulus. AC stores it as 32 bytes via
+# HexStrToByteArray(..., reverse=true) then BigNumber(bytes, littleEndian=true)
+# — those two flips cancel out, so N's numeric value equals int(literal_hex, 16).
+N = int("894B645E89E1535BBDAD5B8B290650530801B18EBFBF5E8FAB3C82872A3E9BB7", 16)
+G = 7
+# AC's AccountMgr::CreateAccount calls Utf8ToUpperOnlyLatin(username)
+# and (password) before passing to SRP6. We do the same here so the
+# inner SHA1 input matches whatever AC would have used.
+user = sys.argv[1].upper()
+pw = sys.argv[2].upper()
+salt = secrets.token_bytes(32)
+inner = hashlib.sha1(f"{user}:{pw}".encode()).digest()
+outer = hashlib.sha1(salt + inner).digest()
+x = int.from_bytes(outer, "little")  # AC BigNumber default is littleEndian
+v = pow(G, x, N).to_bytes(32, "little")  # ToByteArray<32>() with default LE
+print(f"{salt.hex().upper()} {v.hex().upper()}")
+PYEOF
+}
+
+# Insert an account into acore_auth.account via SRP6+SQL. Returns the
+# new account's id on stdout. Aborts the install on failure.
+create_account_via_srp6() {
+    local user="$1" pass="$2"
+    # AC stores usernames uppercased; do the same so case-insensitive
+    # logins from the WoW client work.
+    local upper_user
+    upper_user=$(echo "$user" | tr '[:lower:]' '[:upper:]')
+
+    local salt_hex verifier_hex
+    read -r salt_hex verifier_hex < <(srp6_compute "$upper_user" "$pass")
+    if [ -z "$salt_hex" ] || [ -z "$verifier_hex" ]; then
+        print_error "SRP6 hash computation failed for $upper_user"
+        return 1
+    fi
+
+    sql_exec "INSERT INTO acore_auth.account (username, salt, verifier, expansion) \
+              VALUES ('${upper_user}', UNHEX('${salt_hex}'), UNHEX('${verifier_hex}'), 2);" \
+        || { print_error "Failed to insert account $upper_user"; return 1; }
+
+    local id
+    id=$(sql_exec "SELECT id FROM acore_auth.account WHERE username='${upper_user}' LIMIT 1;")
+    if [ -z "$id" ]; then
+        print_error "Account $upper_user inserted but couldn't read back its id"
+        return 1
+    fi
+    echo "$id"
+}
+
+bootstrap_accounts_and_ahbot() {
+    print_step "Creating admin + Auction House Bot accounts"
+
+    # ── Admin account ─────────────────────────────────────────────
+    local admin_user="${DML_ADMIN_USER:-admin}"
+    local admin_pass="${DML_ADMIN_PASS:-admin}"
+    local admin_id
+    admin_id=$(create_account_via_srp6 "$admin_user" "$admin_pass") || return 1
+    # GM level 3 with RealmID=-1 = god-mode on every realm.
+    sql_exec "INSERT INTO acore_auth.account_access (id, gmlevel, RealmID) \
+              VALUES (${admin_id}, 3, -1);" \
+        || { print_warning "Couldn't grant GM level to ${admin_user}"; }
+    print_success "Created admin account: ${admin_user} (GM level 3, id ${admin_id})"
+
+    # ── AHBOT account (player-level, used only as AH Bot seller) ──
+    # Random password — the user never logs into this account.
+    local ahbot_pass
+    ahbot_pass=$(head -c 16 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
+    local ahbot_id
+    ahbot_id=$(create_account_via_srp6 "AHBOT" "$ahbot_pass") || return 1
+    print_success "Created AH Bot account: AHBOT (id ${ahbot_id})"
+
+    # ── AHBOT character ───────────────────────────────────────────
+    # AHB queries `SELECT guid FROM characters WHERE account = ?`
+    # at startup and needs at least one row. Only three columns lack
+    # defaults: name, taximask, innTriggerId. `guid` is int-unsigned-not-
+    # autoincrement, so we look up MAX(guid)+1 ourselves (Playerbots
+    # already populated 1..700 in our test installs).
+    local next_guid
+    next_guid=$(sql_exec "SELECT COALESCE(MAX(guid),0)+1 FROM acore_characters.characters;")
+    if [ -z "$next_guid" ] || ! [[ "$next_guid" =~ ^[0-9]+$ ]]; then
+        print_error "Couldn't compute next character GUID (got: '$next_guid')"
+        return 1
+    fi
+    sql_exec "INSERT INTO acore_characters.characters \
+              (guid, account, name, race, class, gender, level, taximask, innTriggerId) \
+              VALUES (${next_guid}, ${ahbot_id}, 'AHBotSeller', 1, 1, 0, 1, \
+                      '0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0);" \
+        || { print_warning "Couldn't create AH Bot character"; return 1; }
+    print_success "Created AH Bot character: AHBotSeller (guid ${next_guid}) on account ${ahbot_id}"
+
+    # ── Rewrite mod_ahbot.conf with the new account_id ────────────
+    local conf="$SERVER_DIR/env/dist/etc/modules/mod_ahbot.conf"
+    if [ ! -f "$conf" ]; then
+        print_warning "mod_ahbot.conf not found at $conf — AH Bot won't activate until reconfigured"
+        return 0
+    fi
+    sed -i -E \
+        -e "s|^AuctionHouseBot\.Account[[:space:]]*=.*|AuctionHouseBot.Account = ${ahbot_id}|" \
+        -e "s|^AuctionHouseBot\.GUID[[:space:]]*=.*|AuctionHouseBot.GUID = 0|" \
+        -e "s|^AuctionHouseBot\.GUIDs[[:space:]]*=.*|AuctionHouseBot.GUIDs = \"0\"|" \
+        -e "s|^AuctionHouseBot\.EnableSeller[[:space:]]*=.*|AuctionHouseBot.EnableSeller = 1|" \
+        "$conf"
+    print_success "Configured mod_ahbot.conf (Account=${ahbot_id}, EnableSeller=1)"
+
+    # ── Restart worldserver so AHB picks up the new conf ──────────
+    print_info "Restarting worldserver to activate AH Bot..."
+    (cd "$SERVER_DIR" && docker compose restart ac-worldserver) > /dev/null 2>&1 \
+        || print_warning "Worldserver restart had non-zero exit; AHB will activate on next manual start"
+    print_success "Worldserver restarted"
+}
+
+# ─────────────────────────────────────────
 # RECORD INSTALL METADATA
 # ─────────────────────────────────────────
 write_metadata() {
@@ -696,6 +862,7 @@ print_info "Admin user:   ${DML_ADMIN_USER:-admin}"
 check_system
 install_server
 wait_for_server
+bootstrap_accounts_and_ahbot
 write_metadata
 
 echo ""
@@ -703,7 +870,13 @@ echo -e "${GREEN}${BOLD}══════════════════�
 echo -e "${GREEN}${BOLD}  Install complete.${NC}"
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════${NC}"
 echo ""
-print_info "Next: the UI will pick up the new install and switch to management mode."
-print_info "Account creation, modules, and Gaming Mode setup happen from there."
+print_info "Admin account: ${DML_ADMIN_USER:-admin} / ${DML_ADMIN_PASS:-admin}"
+print_info "Auction House Bot is active and will start listing items shortly."
+echo ""
+echo -e "${YELLOW}One last manual step (WoW client side):${NC}"
+echo -e "  Open your WoW 3.3.5a client folder, find ${CYAN}realmlist.wtf${NC}"
+echo -e "  in the ${CYAN}Data/<locale>/${NC} directory, and set its contents to:"
+echo -e "      ${GREEN}set realmlist 127.0.0.1${NC}"
+echo -e "  This tells your WoW client to connect to your local server."
 echo ""
 exit 0

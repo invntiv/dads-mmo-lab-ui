@@ -141,11 +141,18 @@ export function NavMain({
   )
 }
 
-// Shared className for the primary sidebar button "look" — we reuse it
-// on both the SidebarMenuButton variant and the ButtonGroup variant so
-// the button doesn't visually morph when its mode changes.
-const PRIMARY_BUTTON_CLASS =
-  "min-w-8 h-10! text-sm bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground [&_svg]:size-5! [&>svg:last-of-type]:ml-auto"
+// Shared base classes for the primary sidebar button "look". We split
+// out the trailing-arrow rule from the rest because the ButtonGroup
+// variant doesn't have a trailing arrow — applying `ml-auto` to its
+// only icon would shove the icon to the right edge of the button.
+const PRIMARY_BUTTON_BASE =
+  "min-w-8 h-10! text-sm bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground [&_svg]:size-5!"
+
+// Only apply this on the SidebarMenuButton variant where we render a
+// trailing `→` (or chevron) — pushes that last svg to the right edge.
+const TRAILING_ARROW_AUTO = "[&>svg:last-of-type]:ml-auto"
+
+const PRIMARY_BUTTON_CLASS = `${PRIMARY_BUTTON_BASE} ${TRAILING_ARROW_AUTO}`
 
 function PrimaryServerButton({
   installed,
@@ -220,11 +227,19 @@ function StopRestartButtonGroup({
   const label = isCrashed ? "SERVER CRASHED — STOP" : "STOP SERVER"
 
   return (
+    // `rounded-none` on the buttons matches the SidebarMenuButton style
+    // (sidebar.tsx:469 defines its base as `rounded-none`). Without it
+    // the ButtonGroup variant would render with rounded-md corners that
+    // visually clash with the INSTALL/START SERVER button.
+    //
+    // PRIMARY_BUTTON_BASE (not _CLASS) — we don't want the trailing-
+    // arrow `ml-auto` rule here; with only the StopIcon present it
+    // would push the icon to the right edge of the button.
     <ButtonGroup className="w-full">
       <Button
         type="button"
         onClick={onStop}
-        className={`${PRIMARY_BUTTON_CLASS} flex-1 justify-start gap-2 rounded-md`}
+        className={`${PRIMARY_BUTTON_BASE} flex-1 justify-start gap-2 rounded-none px-2`}
       >
         {leadingIcon}
         <span className="truncate">{label}</span>
@@ -234,7 +249,7 @@ function StopRestartButtonGroup({
           <Button
             type="button"
             aria-label="More server actions"
-            className={`${PRIMARY_BUTTON_CLASS} shrink-0 rounded-md px-2`}
+            className={`${PRIMARY_BUTTON_BASE} shrink-0 rounded-none px-2`}
           >
             <CaretDownIcon className="size-4!" />
           </Button>

@@ -201,6 +201,13 @@ pub fn list_installed_modules() -> Result<Vec<InstalledModule>, String> {
 pub fn list_characters() -> Result<Vec<Character>, String> {
     let container = find_database_container()
         .ok_or_else(|| "ac-database container not found — is the server running?".to_string())?;
+    // Exclude characters owned by:
+    //   - RNDBOT% accounts  — Playerbots spawns ~700 random bots and they'd
+    //     swamp the dropdown; users never want to pick one of them for AH Bot
+    //     (per README warning, the AHB character shouldn't be "active" elsewhere).
+    //   - AHBOT             — our own bootstrap-created seller account. The
+    //     wizard is for OVERRIDING the default with a user character, so
+    //     showing the internal AHBOT row would just be confusing.
     let out = std::process::Command::new("docker")
         .args([
             "exec",
@@ -211,8 +218,12 @@ pub fn list_characters() -> Result<Vec<Character>, String> {
             "-N",
             "-B",
             "-e",
-            "SELECT guid, name, account, level, race, class \
-             FROM acore_characters.characters ORDER BY guid;",
+            "SELECT c.guid, c.name, c.account, c.level, c.race, c.class \
+             FROM acore_characters.characters c \
+             JOIN acore_auth.account a ON a.id = c.account \
+             WHERE a.username NOT LIKE 'RNDBOT%' \
+               AND a.username <> 'AHBOT' \
+             ORDER BY c.guid;",
         ])
         .output()
         .map_err(|e| format!("docker exec mysql: {e}"))?;

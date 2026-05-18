@@ -9,6 +9,7 @@ import { InstallResumeBanner } from "@/components/install-resume-banner"
 import { InventoryScreen } from "@/components/inventory-screen"
 import { ModulesScreen } from "@/components/modules-screen"
 import { ServerControlScreen } from "@/components/server-control-screen"
+import { SettingsScreen } from "@/components/settings-screen"
 import { TeleportScreen } from "@/components/teleport-screen"
 import { WowClientCard } from "@/components/wow-client-card"
 import {
@@ -53,6 +54,7 @@ function AppShell() {
   const showModules = isPagedView && activePage === "modules"
   const showTeleport = isPagedView && activePage === "teleport"
   const showInventory = isPagedView && activePage === "inventory"
+  const showSettings = isPagedView && activePage === "settings"
   const showDashboard = isPagedView && activePage === "dashboard"
 
   let title = "Welcome!"
@@ -67,6 +69,7 @@ function AppShell() {
   else if (showModules) title = "Modules"
   else if (showTeleport) title = "Teleport"
   else if (showInventory) title = "Inventory"
+  else if (showSettings) title = "Settings"
   else if (showDashboard) title = "Dashboard"
 
   let mainContent
@@ -80,6 +83,8 @@ function AppShell() {
     mainContent = <TeleportScreen />
   } else if (showInventory) {
     mainContent = <InventoryScreen />
+  } else if (showSettings) {
+    mainContent = <SettingsScreen />
   } else if (showDashboard) {
     mainContent = (
       // Realmlist reminder sits above the dashboard content. Self-

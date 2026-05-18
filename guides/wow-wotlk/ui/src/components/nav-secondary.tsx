@@ -18,8 +18,14 @@ export function NavSecondary({
 }: {
   items: {
     title: string
+    /** Used when this item is a plain link. Items that pass `onClick`
+     * are rendered as buttons and route via the in-app activePage
+     * state instead — keeps Settings / Get Help / Search side by side
+     * even though only some of them have real screens yet. */
     url: string
     icon: React.ReactNode
+    onClick?: () => void
+    isActive?: boolean
   }[]
 } & React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
   const { installed } = useServerState()
@@ -35,12 +41,23 @@ export function NavSecondary({
               className={cn(disabledClass)}
               aria-disabled={!installed}
             >
-              <SidebarMenuButton asChild>
-                <a href={item.url}>
+              {item.onClick ? (
+                <SidebarMenuButton
+                  onClick={item.onClick}
+                  isActive={item.isActive}
+                  tooltip={item.title}
+                >
                   {item.icon}
                   <span>{item.title}</span>
-                </a>
-              </SidebarMenuButton>
+                </SidebarMenuButton>
+              ) : (
+                <SidebarMenuButton asChild>
+                  <a href={item.url}>
+                    {item.icon}
+                    <span>{item.title}</span>
+                  </a>
+                </SidebarMenuButton>
+              )}
             </SidebarMenuItem>
           ))}
         </SidebarMenu>

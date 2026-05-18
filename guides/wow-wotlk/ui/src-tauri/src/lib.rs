@@ -3,6 +3,7 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_log::{Target, TargetKind};
 
 mod app_settings;
+mod client_assets;
 mod install;
 mod inventory;
 mod modules;
@@ -49,6 +50,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
+                // Cap noisy dependencies. wow_mpq emits DEBUG/TRACE per
+                // decompressed sector — extracting one DBC produces tens
+                // of thousands of lines, which floods the webview IPC
+                // channel and freezes the renderer mid-extract. Cap at
+                // Warn for the WoW-asset stack; our own crate stays at
+                // the global default (Info).
+                .level(log::LevelFilter::Info)
+                .level_for("wow_mpq", log::LevelFilter::Warn)
+                .level_for("wow_dbc", log::LevelFilter::Warn)
+                .level_for("wow_blp", log::LevelFilter::Warn)
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir { file_name: None }),
@@ -81,7 +92,18 @@ pub fn run() {
             teleport::teleport_character_to_location,
             teleport::teleport_character_to_coords,
             inventory::search_items,
-            inventory::send_item_to_character
+            inventory::send_item_to_character,
+            client_assets::get_icon_cache_status,
+            client_assets::extract_item_icons,
+            client_assets::load_item_icon_map,
+            client_assets::wipe_icon_cache,
+            client_assets::get_tooltip_cache_status,
+            client_assets::extract_tooltip_data,
+            client_assets::load_tooltip_data,
+            client_assets::wipe_tooltip_cache,
+            app_settings::is_notice_dismissed,
+            app_settings::dismiss_notice,
+            app_settings::undismiss_notice
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {

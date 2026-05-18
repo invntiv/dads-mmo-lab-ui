@@ -1,10 +1,13 @@
 import * as React from "react"
 import {
   ArrowSquareOutIcon,
+  GearIcon,
   MagnifyingGlassIcon,
   PackageIcon,
   PaperPlaneTiltIcon,
+  SparkleIcon,
   WarningCircleIcon,
+  XIcon,
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
@@ -28,8 +31,22 @@ import {
   CharacterPicker,
   useSelectedCharacter,
 } from "@/components/character-picker"
+import { useServerState } from "@/components/server-state-context"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
+
+const ENRICH_NOTICE_ID = "inventory.enrich-info-well"
+
+type IconCacheStatus =
+  | { status: "no_client" }
+  | { status: "not_extracted"; client_dir: string }
+  | {
+      status: "ready"
+      count: number
+      extracted_at: string
+      source_dir: string
+      stale: boolean
+    }
 
 /**
  * Inventory page. v1 scaffolding:
@@ -112,6 +129,65 @@ export function InventoryScreen() {
   const [searchError, setSearchError] = React.useState<string | null>(null)
 
   const [sendingFor, setSendingFor] = React.useState<ItemSummary | null>(null)
+
+  // Icon cache lifecycle. `iconMap` is displayid → icon-name (lowercase,
+  // no extension). Loaded once from the Rust cache after status flips
+  // to "ready" — kept in memory and consulted by every ItemIcon render.
+  // The enrichment ACTIONS now live on the Settings page; this screen
+  // only renders the resulting icons + shows a small dismissable well
+  // pointing the user there if they haven't extracted yet.
+  const [iconStatus, setIconStatus] = React.useState<IconCacheStatus | null>(
+    null
+  )
+  const [iconMap, setIconMap] = React.useState<Record<string, string>>({})
+  const [enrichDismissed, setEnrichDismissed] = React.useState<boolean | null>(
+    null
+  )
+
+  const refreshIconStatus = React.useCallback(async () => {
+    if (!isTauri()) return
+    try {
+      const s = await trackedInvoke<IconCacheStatus>("get_icon_cache_status")
+      setIconStatus(s)
+    } catch (e) {
+      console.warn("get_icon_cache_status failed", e)
+    }
+  }, [])
+
+  const loadIconMap = React.useCallback(async () => {
+    if (!isTauri()) return
+    try {
+      const m = await trackedInvoke<Record<string, string>>(
+        "load_item_icon_map"
+      )
+      setIconMap(m)
+    } catch (e) {
+      // Cache may have just been wiped — non-fatal, fall back to text tiles.
+      console.warn("load_item_icon_map failed", e)
+      setIconMap({})
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void refreshIconStatus()
+    if (isTauri()) {
+      void trackedInvoke<boolean>("is_notice_dismissed", {
+        noticeId: ENRICH_NOTICE_ID,
+      })
+        .then((d) => setEnrichDismissed(d))
+        .catch(() => setEnrichDismissed(false))
+    } else {
+      setEnrichDismissed(false)
+    }
+  }, [refreshIconStatus])
+
+  // Auto-load map once the status reports ready (covers the first-load
+  // case where the cache already existed from a previous session).
+  React.useEffect(() => {
+    if (iconStatus?.status === "ready" && Object.keys(iconMap).length === 0) {
+      void loadIconMap()
+    }
+  }, [iconStatus, iconMap, loadIconMap])
 
   // Debounced search — the dataset is large (~40k items in vanilla AC)
   // so wait 300ms after the last keystroke before hitting the DB.
@@ -222,7 +298,12 @@ export function InventoryScreen() {
         </div>
       </header>
 
-      <div className="min-h-0 overflow-y-auto pr-1 pb-3">
+      <div className="min-h-0 space-y-3 overflow-y-auto pr-1 pb-3">
+        <EnrichInfoWell
+          iconStatus={iconStatus}
+          dismissed={enrichDismissed}
+          onDismiss={() => setEnrichDismissed(true)}
+        />
         {searchError ? (
           <ErrorPanel message={searchError} onRetry={runSearch} />
         ) : items.length === 0 && !searching ? (
@@ -233,6 +314,7 @@ export function InventoryScreen() {
               <ItemTile
                 key={item.entry}
                 item={item}
+                iconMap={iconMap}
                 onSend={() => setSendingFor(item)}
                 canSend={character != null}
               />
@@ -257,17 +339,19 @@ export function InventoryScreen() {
 
 function ItemTile({
   item,
+  iconMap,
   onSend,
   canSend,
 }: {
   item: ItemSummary
+  iconMap: Record<string, string>
   onSend: () => void
   canSend: boolean
 }) {
   const quality = QUALITY_COLORS[item.quality] ?? "text-foreground"
   return (
     <div className="group flex items-center gap-3 rounded-md border border-border bg-card p-3 transition-colors hover:border-primary/40">
-      <ItemIcon item={item} />
+      <ItemIcon item={item} iconMap={iconMap} />
       <div className="min-w-0 flex-1">
         <div className={cn("truncate text-sm font-medium leading-tight", quality)}>
           {item.name}
@@ -302,14 +386,39 @@ function ItemTile({
 }
 
 /**
- * Square 36x36 icon tile. We don't have the WoW icon NAME from MySQL
- * (it's a DBC field), so as a v1 placeholder we render the item's
- * quality-colored entry id in monospace. A future iteration can swap
- * this for a Wowhead-hosted image once we either bundle the icon-name
- * lookup or shell out to a static map.
+ * Square 36x36 icon tile. When the client-DBC icon cache is populated
+ * (enrichment is triggered from the Settings page), we look up the
+ * icon name by displayid and render Wowhead's CDN image. Without the
+ * cache, falls back to a quality-colored entry-id chit so the grid is
+ * still scannable.
  */
-function ItemIcon({ item }: { item: ItemSummary }) {
+function ItemIcon({
+  item,
+  iconMap,
+}: {
+  item: ItemSummary
+  iconMap: Record<string, string>
+}) {
   const quality = QUALITY_COLORS[item.quality] ?? "text-foreground"
+  const iconName = iconMap[String(item.display_id)]
+  const [imgError, setImgError] = React.useState(false)
+
+  if (iconName && !imgError) {
+    // Wowhead's icon CDN is publicly served — same images you see on
+    // wowhead.com without scraping their HTML. `medium/` is 36x36 and
+    // matches our tile size; `large/` is 56x56 if we want to bump it.
+    const url = `https://wow.zamimg.com/images/wow/icons/medium/${iconName}.jpg`
+    return (
+      <img
+        src={url}
+        alt={item.name}
+        loading="lazy"
+        onError={() => setImgError(true)}
+        className="size-9 shrink-0 rounded border border-border bg-muted/40 object-cover"
+      />
+    )
+  }
+
   return (
     <div
       className={cn(
@@ -499,6 +608,66 @@ function ErrorPanel({
       <Button size="sm" variant="outline" className="mt-3" onClick={onRetry}>
         Retry
       </Button>
+    </div>
+  )
+}
+
+/**
+ * Small info well at the top of the inventory grid. Shows ONLY when:
+ *   - icon cache status has loaded AND is "not_extracted" AND
+ *   - user has a client connected (status would be "no_client" otherwise) AND
+ *   - user hasn't clicked dismiss before (persisted to settings.json).
+ *
+ * Once the user extracts (from the Settings page), status flips to
+ * "ready" and the well stops rendering on its own — no need to also
+ * dismiss it.
+ */
+function EnrichInfoWell({
+  iconStatus,
+  dismissed,
+  onDismiss,
+}: {
+  iconStatus: IconCacheStatus | null
+  dismissed: boolean | null
+  onDismiss: () => void
+}) {
+  const { setActivePage } = useServerState()
+  if (!iconStatus || dismissed == null) return null
+  if (iconStatus.status !== "not_extracted") return null
+  if (dismissed) return null
+
+  const persistDismiss = () => {
+    onDismiss()
+    if (isTauri()) {
+      void trackedInvoke("dismiss_notice", { noticeId: ENRICH_NOTICE_ID })
+        .catch((e) => console.warn("dismiss_notice failed", e))
+    }
+  }
+
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-sky-500/40 bg-sky-500/10 p-3 text-sky-900 dark:text-sky-200">
+      <SparkleIcon className="mt-0.5 size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+      <div className="flex-1 text-xs">
+        <strong>Want real item icons?</strong> Head to{" "}
+        <button
+          type="button"
+          onClick={() => setActivePage("settings")}
+          className="inline-flex items-center gap-1 font-medium underline-offset-2 hover:underline"
+        >
+          <GearIcon className="size-3.5" />
+          Settings
+        </button>{" "}
+        and run the one-time enrichment. You'll get Wowhead-quality
+        icons (plus tooltips and spell data as those land).
+      </div>
+      <button
+        type="button"
+        onClick={persistDismiss}
+        aria-label="Dismiss"
+        className="shrink-0 text-sky-700/70 transition-colors hover:text-sky-900 dark:text-sky-400/70 dark:hover:text-sky-200"
+      >
+        <XIcon className="size-4" />
+      </button>
     </div>
   )
 }

@@ -1,14 +1,15 @@
 import * as React from "react"
 import {
+  ArrowRightIcon,
   CheckCircleIcon,
   FolderOpenIcon,
+  GearIcon,
   GlobeIcon,
   WarningCircleIcon,
-  XIcon,
 } from "@phosphor-icons/react"
-import { open as openDialog } from "@tauri-apps/plugin-dialog"
 
 import { Button } from "@/components/ui/button"
+import { useServerState } from "@/components/server-state-context"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
@@ -45,6 +46,7 @@ type WowClientState = {
 const POLL_INTERVAL_MS = 30_000
 
 export function WowClientCard() {
+  const { setActivePage } = useServerState()
   const [state, setState] = React.useState<WowClientState | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
@@ -69,30 +71,6 @@ export function WowClientCard() {
     const handle = setInterval(refresh, POLL_INTERVAL_MS)
     return () => clearInterval(handle)
   }, [refresh])
-
-  const handleBrowse = React.useCallback(async () => {
-    setError(null)
-    setBusy(true)
-    try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Select your WoW 3.3.5a install directory",
-      })
-      if (!picked || Array.isArray(picked)) {
-        setBusy(false)
-        return
-      }
-      const next = await trackedInvoke<WowClientState>("set_wow_directory", {
-        path: picked,
-      })
-      setState(next)
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }, [])
 
   const handleFix = React.useCallback(async () => {
     setError(null)
@@ -124,7 +102,11 @@ export function WowClientCard() {
   // jarring "Select your WoW client" flash before settings load.
   if (state === null) return null
 
-  // No directory chosen yet → big "select your client" CTA
+  // No directory chosen yet → big "select your client" CTA. The
+  // browse dialog itself lives on the Settings page now (next to
+  // Forget client), so this button routes there. Keeping the
+  // dashboard notification because the dashboard is the natural
+  // landing surface where the user notices "something's missing."
   if (!state.directory) {
     return (
       <CardShell tone="amber">
@@ -143,12 +125,13 @@ export function WowClientCard() {
         </div>
         <Button
           size="sm"
-          onClick={handleBrowse}
+          onClick={() => setActivePage("settings")}
           disabled={busy}
           className="shrink-0 gap-1.5"
         >
-          <FolderOpenIcon className="size-4" />
-          {busy ? "Working…" : "Browse"}
+          <GearIcon className="size-4" />
+          Open Settings
+          <ArrowRightIcon className="size-4" />
         </Button>
       </CardShell>
     )
@@ -197,7 +180,11 @@ export function WowClientCard() {
     )
   }
 
-  // Directory set + realmlist correct → small confirmation strip
+  // Directory set + realmlist correct → small confirmation strip.
+  // Intentionally NOT dismissable — earlier versions had an X here that
+  // routed to handleClear (= forget client), which read as "dismiss
+  // notification" and silently disconnected. Disconnect now lives in
+  // Settings → WoW client.
   return (
     <CardShell tone="emerald">
       <CheckCircleIcon className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
@@ -215,15 +202,6 @@ export function WowClientCard() {
           )}
         </div>
       </div>
-      <button
-        type="button"
-        onClick={handleClear}
-        disabled={busy}
-        aria-label="Forget WoW client directory"
-        className="text-emerald-700/70 transition-colors hover:text-emerald-800 dark:text-emerald-300/70 dark:hover:text-emerald-200"
-      >
-        <XIcon className="size-4" />
-      </button>
     </CardShell>
   )
 }

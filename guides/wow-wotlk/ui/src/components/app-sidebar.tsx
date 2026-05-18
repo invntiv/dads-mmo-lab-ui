@@ -4,6 +4,7 @@ import { NavDocuments } from "@/components/nav-documents"
 import { NavMain } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
+import { useServerState } from "@/components/server-state-context"
 import {
   Sidebar,
   SidebarContent,
@@ -176,6 +177,19 @@ const data = {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { activePage, setActivePage } = useServerState()
+  // Wire the Settings entry to real routing while leaving Get Help /
+  // Search as href="#" stubs. The other two come from the shadcn
+  // starter and will get real targets when those features land.
+  const secondaryItems = data.navSecondary.map((item) =>
+    item.title === "Settings"
+      ? {
+          ...item,
+          onClick: () => setActivePage("settings"),
+          isActive: activePage === "settings",
+        }
+      : item
+  )
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -196,7 +210,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarContent>
         <NavMain items={data.navMain} />
         <NavDocuments items={data.documents} />
-        <NavSecondary items={data.navSecondary} className="mt-auto" />
+        <NavSecondary items={secondaryItems} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={data.user} />

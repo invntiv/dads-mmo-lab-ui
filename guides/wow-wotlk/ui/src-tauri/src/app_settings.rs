@@ -19,6 +19,12 @@ pub struct AppSettings {
     /// WoW-client picker on the dashboard. Used by wow_client for
     /// realmlist management and (later) addon installation.
     pub wow_client_dir: Option<String>,
+    /// Notice IDs the user has clicked-to-dismiss. We persist these
+    /// so a dismissal sticks across restarts — e.g. the "enrich your
+    /// items in Settings" well on the Inventory page. List rather than
+    /// set so the JSON shape stays diff-friendly; lookups are O(n)
+    /// against a tiny list which is fine.
+    pub dismissed_notices: Vec<String>,
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -52,5 +58,37 @@ pub fn save(settings: &AppSettings) -> Result<(), String> {
         .map_err(|e| format!("serialize settings: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("write {}: {}", path.display(), e))?;
+    Ok(())
+}
+
+// ── Dismissable-notice plumbing ─────────────────────────────────────
+// Notices are small dismiss-once UI prompts (e.g. "Enrich items in
+// Settings"). We use opaque string IDs rather than enums so frontend
+// can add new notices without round-tripping a Rust change. Frontend
+// owns the canonical ID strings.
+
+#[tauri::command]
+pub fn is_notice_dismissed(notice_id: String) -> bool {
+    load().dismissed_notices.iter().any(|n| n == &notice_id)
+}
+
+#[tauri::command]
+pub fn dismiss_notice(notice_id: String) -> Result<(), String> {
+    let mut s = load();
+    if !s.dismissed_notices.iter().any(|n| n == &notice_id) {
+        s.dismissed_notices.push(notice_id);
+        save(&s)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn undismiss_notice(notice_id: String) -> Result<(), String> {
+    let mut s = load();
+    let before = s.dismissed_notices.len();
+    s.dismissed_notices.retain(|n| n != &notice_id);
+    if s.dismissed_notices.len() != before {
+        save(&s)?;
+    }
     Ok(())
 }

@@ -740,13 +740,25 @@ PYEOF
 }
 
 # Insert an account into acore_auth.account via SRP6+SQL. Returns the
-# new account's id on stdout. Aborts the install on failure.
+# account's id on stdout. Idempotent: if an account with the given
+# username already exists (e.g. resume-after-crash), returns its
+# existing id instead of erroring on the duplicate-key insert.
 create_account_via_srp6() {
     local user="$1" pass="$2"
     # AC stores usernames uppercased; do the same so case-insensitive
-    # logins from the WoW client work.
+    # logins from the WoW client work AND so our existence check uses
+    # the canonical form.
     local upper_user
     upper_user=$(echo "$user" | tr '[:lower:]' '[:upper:]')
+
+    # If the account already exists, return its id and skip the insert.
+    # This is what makes the bootstrap step safe to re-run.
+    local existing_id
+    existing_id=$(sql_exec "SELECT id FROM acore_auth.account WHERE username='${upper_user}' LIMIT 1;")
+    if [ -n "$existing_id" ]; then
+        echo "$existing_id"
+        return 0
+    fi
 
     local salt_hex verifier_hex
     read -r salt_hex verifier_hex < <(srp6_compute "$upper_user" "$pass")
@@ -776,11 +788,14 @@ bootstrap_accounts_and_ahbot() {
     local admin_pass="${DML_ADMIN_PASS:-admin}"
     local admin_id
     admin_id=$(create_account_via_srp6 "$admin_user" "$admin_pass") || return 1
-    # GM level 3 with RealmID=-1 = god-mode on every realm.
+    # GM level 3 with RealmID=-1 = god-mode on every realm. Use
+    # INSERT ... ON DUPLICATE KEY UPDATE so a resume after a partial
+    # bootstrap doesn't error out on the (id, RealmID) primary key.
     sql_exec "INSERT INTO acore_auth.account_access (id, gmlevel, RealmID) \
-              VALUES (${admin_id}, 3, -1);" \
+              VALUES (${admin_id}, 3, -1) \
+              ON DUPLICATE KEY UPDATE gmlevel=VALUES(gmlevel);" \
         || { print_warning "Couldn't grant GM level to ${admin_user}"; }
-    print_success "Created admin account: ${admin_user} (GM level 3, id ${admin_id})"
+    print_success "Admin account ready: ${admin_user} (GM level 3, id ${admin_id})"
 
     # ── AHBOT account (player-level, used only as AH Bot seller) ──
     # Random password — the user never logs into this account.
@@ -788,7 +803,7 @@ bootstrap_accounts_and_ahbot() {
     ahbot_pass=$(head -c 16 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
     local ahbot_id
     ahbot_id=$(create_account_via_srp6 "AHBOT" "$ahbot_pass") || return 1
-    print_success "Created AH Bot account: AHBOT (id ${ahbot_id})"
+    print_success "AH Bot account ready: AHBOT (id ${ahbot_id})"
 
     # ── AHBOT character ───────────────────────────────────────────
     # AHB queries `SELECT guid FROM characters WHERE account = ?`
@@ -796,18 +811,33 @@ bootstrap_accounts_and_ahbot() {
     # defaults: name, taximask, innTriggerId. `guid` is int-unsigned-not-
     # autoincrement, so we look up MAX(guid)+1 ourselves (Playerbots
     # already populated 1..700 in our test installs).
-    local next_guid
-    next_guid=$(sql_exec "SELECT COALESCE(MAX(guid),0)+1 FROM acore_characters.characters;")
-    if [ -z "$next_guid" ] || ! [[ "$next_guid" =~ ^[0-9]+$ ]]; then
-        print_error "Couldn't compute next character GUID (got: '$next_guid')"
-        return 1
+    #
+    # Idempotency: if AHBOT account already has at least one character
+    # (resume after partial bootstrap), use the existing one instead of
+    # creating a second AHBotSeller. AHB with GUID=0 uses ALL chars on
+    # the account anyway, so an extra seller would just confuse later
+    # reconfigure flows.
+    local existing_guid
+    existing_guid=$(sql_exec "SELECT guid FROM acore_characters.characters WHERE account=${ahbot_id} ORDER BY guid LIMIT 1;")
+    local seller_guid
+    if [ -n "$existing_guid" ]; then
+        seller_guid="$existing_guid"
+        print_success "AH Bot character already exists: guid ${seller_guid}"
+    else
+        local next_guid
+        next_guid=$(sql_exec "SELECT COALESCE(MAX(guid),0)+1 FROM acore_characters.characters;")
+        if [ -z "$next_guid" ] || ! [[ "$next_guid" =~ ^[0-9]+$ ]]; then
+            print_error "Couldn't compute next character GUID (got: '$next_guid')"
+            return 1
+        fi
+        sql_exec "INSERT INTO acore_characters.characters \
+                  (guid, account, name, race, class, gender, level, taximask, innTriggerId) \
+                  VALUES (${next_guid}, ${ahbot_id}, 'AHBotSeller', 1, 1, 0, 1, \
+                          '0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0);" \
+            || { print_warning "Couldn't create AH Bot character"; return 1; }
+        seller_guid="$next_guid"
+        print_success "Created AH Bot character: AHBotSeller (guid ${seller_guid}) on account ${ahbot_id}"
     fi
-    sql_exec "INSERT INTO acore_characters.characters \
-              (guid, account, name, race, class, gender, level, taximask, innTriggerId) \
-              VALUES (${next_guid}, ${ahbot_id}, 'AHBotSeller', 1, 1, 0, 1, \
-                      '0 0 0 0 0 0 0 0 0 0 0 0 0 0 ', 0);" \
-        || { print_warning "Couldn't create AH Bot character"; return 1; }
-    print_success "Created AH Bot character: AHBotSeller (guid ${next_guid}) on account ${ahbot_id}"
 
     # ── Rewrite mod_ahbot.conf with the new account_id ────────────
     local conf="$SERVER_DIR/env/dist/etc/modules/mod_ahbot.conf"
@@ -859,11 +889,27 @@ print_info "Install dir:  $SERVER_DIR"
 [ -n "$BUILD_METHOD" ] && print_info "Build method: $BUILD_METHOD"
 print_info "Admin user:   ${DML_ADMIN_USER:-admin}"
 
-check_system
-install_server
-wait_for_server
-bootstrap_accounts_and_ahbot
-write_metadata
+# RESUME mode (DML_RESUME=1): an earlier install run made it past the
+# clone + compile but crashed before bootstrap could finish (e.g.
+# Hyprland crashed during wait_for_server). Skip the expensive
+# clone/compile work — the containers + modules are already on disk —
+# and just finish the post-server-ready setup.
+#
+# Detection of the partial state happens UI-side: the dashboard shows a
+# "Finish setup" banner when install.json is missing, and clicking it
+# spawns this script with DML_RESUME=1.
+if [ "${DML_RESUME:-0}" = "1" ]; then
+    print_info "Resume mode — skipping clone/compile, completing post-install setup..."
+    wait_for_server
+    bootstrap_accounts_and_ahbot
+    write_metadata
+else
+    check_system
+    install_server
+    wait_for_server
+    bootstrap_accounts_and_ahbot
+    write_metadata
+fi
 
 echo ""
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════${NC}"

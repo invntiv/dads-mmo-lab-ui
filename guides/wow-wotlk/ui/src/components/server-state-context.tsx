@@ -8,6 +8,9 @@ export type InstallVariant = "base" | "npcbots" | "playerbots"
 export type DetectedInstall = {
   path: string
   variant: InstallVariant | "unknown"
+  /** True when `.dads-mmo-lab/install.json` exists at the install root.
+   * False = partial install (clone+compile done, bootstrap didn't run). */
+  complete: boolean
 }
 
 export type InstallStatus =
@@ -52,6 +55,10 @@ export type OnboardingChoices = {
   adminPass: string
   buildMethod?: "prebuilt" | "compile"
   force?: boolean
+  /** Skip clone/compile, only run wait-for-server + bootstrap + write-metadata.
+   * Used by the "Finish setup" banner on the dashboard when a crash
+   * left an install partial. */
+  resume?: boolean
   /** Module keys to clone + compile in (e.g. `["mod-ah-bot", "mod-solocraft"]`). */
   modules?: string[]
   /** Per-module config — only ones the user actually went through a config step for. */
@@ -193,6 +200,8 @@ type ServerState = {
   // Detection
   installs: DetectedInstall[]
   installed: boolean
+  /** True when at least one install exists AND it has install.json (full bootstrap done). */
+  installComplete: boolean
   detecting: boolean
   refreshInstalls: () => Promise<void>
 
@@ -552,17 +561,22 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
   }, [])
 
   // Derive whether AH Bot is installed but unconfigured. AH Bot's conf
-  // ships with Account=0 / GUID=0 from install-wow-ui.sh as a placeholder
-  // — the post-install wizard flips them to real values + EnableSeller=1.
+  // ships with Account=0 / GUID=0 / EnableSeller=0 from
+  // install-wow-ui.sh as a placeholder. The bootstrap step (or the
+  // post-install wizard) sets Account=<id> and EnableSeller=1.
+  //
+  // IMPORTANT: GUID=0 alone is NOT a "not configured" signal — per AHB
+  // source (AuctionHouseBotWorldScript.cpp:35), GUID=0 with Account>0
+  // means "use EVERY character on the account", which is exactly what
+  // bootstrap_accounts_and_ahbot configures. The real signal is
+  // Account=0 OR EnableSeller!=1. Earlier code that also tripped on
+  // GUID=0 flagged the working state as broken.
   const ahbotNeedsConfig = React.useMemo(() => {
     const ahbot = installedModules.find((m) => m.key === "mod-ah-bot")
     if (!ahbot) return false
-    const guid = ahbot.conf["AuctionHouseBot.GUID"] ?? "0"
     const account = ahbot.conf["AuctionHouseBot.Account"] ?? "0"
     const enableSeller = ahbot.conf["AuctionHouseBot.EnableSeller"] ?? "0"
-    // Treat any of {guid=0, account=0, EnableSeller=0} as "not yet configured".
-    // The wizard flips all three together so they're correlated in practice.
-    return guid === "0" || account === "0" || enableSeller === "0"
+    return account === "0" || enableSeller !== "1"
   }, [installedModules])
 
   // Subscribe to install:* events for the whole app lifetime using the
@@ -713,6 +727,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
             adminUser: choices.adminUser,
             adminPass: choices.adminPass,
             force: choices.force ?? false,
+            resume: choices.resume ?? false,
             modules: choices.modules ?? [],
             moduleConfig: choices.moduleConfig ?? {},
           },
@@ -843,6 +858,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     () => ({
       installs,
       installed: installs.length > 0,
+      installComplete: installs.length > 0 && installs.every((i) => i.complete),
       detecting,
       refreshInstalls,
       installOpen,

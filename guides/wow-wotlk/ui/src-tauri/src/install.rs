@@ -20,6 +20,13 @@ pub struct InstallState {
 pub struct DetectedInstall {
     pub path: String,
     pub variant: String,
+    /// True when `.dads-mmo-lab/install.json` exists at the install root.
+    /// install.json is the last thing the install script writes, so its
+    /// presence is the source of truth for "install ran to completion".
+    /// An install with docker-compose.yml but no install.json is a
+    /// partial install that needs the bootstrap step finished — the UI
+    /// shows a "Finish setup" affordance for these.
+    pub complete: bool,
 }
 
 #[derive(Serialize)]
@@ -70,8 +77,14 @@ pub struct InstallRequest {
     pub admin_pass: String,
     #[serde(default)]
     pub force: bool,
+    /// When true, the install script skips clone/compile and only runs
+    /// the wait-for-server + bootstrap + write-metadata steps. Used to
+    /// recover from a crash that interrupted a near-finished install.
+    #[serde(default)]
+    pub resume: bool,
     /// Module keys to install (e.g. `["mod-ah-bot", "mod-solocraft"]`).
     /// Translated to `DML_MODULES_ADD` (comma-separated) before spawn.
+    /// Ignored when `resume=true` (modules are already cloned + built).
     #[serde(default)]
     pub modules: Vec<String>,
     /// Per-module config from the wizard. Each Some(...) variant maps to
@@ -177,9 +190,11 @@ pub fn detect_installs() -> Result<DetectionResult, String> {
             _ => "unknown",
         }
         .to_string();
+        let complete = path.join(".dads-mmo-lab").join("install.json").exists();
         installs.push(DetectedInstall {
             path: path.to_string_lossy().into_owned(),
             variant,
+            complete,
         });
     }
 
@@ -236,6 +251,7 @@ pub async fn start_install(
 
     let mut cmd = Command::new("bash");
     cmd.arg(&script)
+        .env("DML_RESUME", if request.resume { "1" } else { "0" })
         .env("DML_SERVER_TYPE", &request.server_type)
         .env("DML_ADMIN_USER", &request.admin_user)
         .env("DML_ADMIN_PASS", &request.admin_pass)

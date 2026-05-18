@@ -2,9 +2,11 @@ use tauri::webview::PageLoadEvent;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_log::{Target, TargetKind};
 
+mod app_settings;
 mod install;
 mod modules;
 mod server;
+mod wow_client;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -52,6 +54,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(external_navigation_plugin())
         .manage(install::InstallState::default())
         .manage(server::ServerControlState::default())
@@ -66,7 +69,11 @@ pub fn run() {
             server::restart_server,
             modules::list_installed_modules,
             modules::list_characters,
-            modules::configure_ahbot_character
+            modules::configure_ahbot_character,
+            wow_client::get_wow_client_state,
+            wow_client::set_wow_directory,
+            wow_client::clear_wow_directory,
+            wow_client::fix_realmlist
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {

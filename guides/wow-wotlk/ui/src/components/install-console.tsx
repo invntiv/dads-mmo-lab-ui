@@ -139,9 +139,15 @@ export function InstallConsole({
 }
 
 function ConsoleLine({ line }: { line: InstallLogLine }) {
+  // Note: `stderr` is rendered in lime, NOT red. Docker / git / build
+  // tools emit lifecycle info to stderr by convention even on success
+  // (container Created/Started, git "Cloning into…", etc.) — colouring
+  // those red made every install look catastrophic. Real failures
+  // surface via the exit code + the system-stream "Installer failed"
+  // line, not via stderr coloring.
   const color =
     line.stream === "stderr"
-      ? "text-rose-400"
+      ? "text-lime-400"
       : line.stream === "system"
         ? "text-amber-300"
         : line.stream === "highlight"

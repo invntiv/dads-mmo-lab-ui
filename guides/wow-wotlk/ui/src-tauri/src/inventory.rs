@@ -367,6 +367,72 @@ pub fn get_item_details(entry: u32) -> Result<ItemDetails, String> {
     })
 }
 
+/// Tiny projection used for set-member name lookups and any other
+/// "I just need the name + quality color for this entry id" surface.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemMini {
+    pub entry: u32,
+    pub name: String,
+    pub quality: u32,
+}
+
+/// Fetch (name, quality) for many item entries in one DB roundtrip.
+/// The Item Tooltip uses this to render set-member names when an item
+/// belongs to an ItemSet — a tooltip with N pieces does one query of
+/// N rows instead of N separate get_item_details calls. Order of the
+/// returned list matches insertion order in the DB (entry asc) — the
+/// frontend re-sorts to match the original input order if needed.
+#[tauri::command]
+pub fn get_items_by_entries(entries: Vec<u32>) -> Result<Vec<ItemMini>, String> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let container = find_database_container()
+        .ok_or_else(|| "ac-database container not found — is the server running?".to_string())?;
+    // Cap aggressively — a single set has ≤17 items per the ItemSet.dbc
+    // array, so even a malicious caller can't really pile this up.
+    let id_list = entries
+        .iter()
+        .take(64)
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT entry, name, Quality FROM acore_world.item_template WHERE entry IN ({id_list});"
+    );
+    let out = std::process::Command::new("docker")
+        .args(["exec", &container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql])
+        .output()
+        .map_err(|e| format!("docker exec mysql: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "mysql query failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut rows = Vec::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let Some(entry) = parts[0].trim().parse::<u32>().ok() else {
+            continue;
+        };
+        let Some(quality) = parts[2].trim().parse::<u32>().ok() else {
+            continue;
+        };
+        rows.push(ItemMini {
+            entry,
+            name: parts[1].trim().to_string(),
+            quality,
+        });
+    }
+    Ok(rows)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendItemArgs {

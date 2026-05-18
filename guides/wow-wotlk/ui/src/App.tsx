@@ -68,7 +68,7 @@ function AppShell() {
           : "Starting server"
   else if (showModules) title = "Modules"
   else if (showTeleport) title = "Teleport"
-  else if (showInventory) title = "Inventory"
+  else if (showInventory) title = "Item Database"
   else if (showSettings) title = "Settings"
   else if (showDashboard) title = "Dashboard"
 

@@ -3,6 +3,7 @@ import * as React from "react"
 import {
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -19,28 +20,52 @@ import {
   ArrowClockwiseIcon,
   ArrowRightIcon,
   CaretDownIcon,
-  CompassIcon,
   FloppyDiskBackIcon,
-  HouseIcon,
-  PackageIcon,
   PlayIcon,
-  PuzzlePieceIcon,
   StopIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react"
 import { LottieLoop } from "@/components/lottie-loop"
-import { useServerState } from "@/components/server-state-context"
+import {
+  useServerState,
+  type ActivePage,
+} from "@/components/server-state-context"
 import loadingAnimation from "@/assets/lottie/loadingV4.json"
 
-export function NavMain({
-  items,
-}: {
-  items: {
-    title: string
-    url: string
-    icon?: React.ReactNode
-  }[]
-}) {
+/**
+ * One sidebar entry — a real route, a disabled placeholder, or a
+ * route with a notification indicator (e.g. AH Bot needs setup).
+ */
+export type NavEntry = {
+  title: string
+  icon: React.ReactNode
+  /** ActivePage value to route to. When `disabled` is true, ignored. */
+  page?: ActivePage
+  /** Disabled stubs render but don't navigate. Used for future
+   * features (Auction House, NPCs, etc.) so users can see what's
+   * coming. */
+  disabled?: boolean
+  /** When true, draws the pulsing amber dot used to call attention
+   * to a needed action (currently: Modules when AH Bot is unconfigured). */
+  notify?: boolean
+  /** Overrides the default tooltip (which is the title). */
+  tooltip?: string
+}
+
+export type NavGroupSpec = {
+  /** Optional group heading. Without one, the group renders flush
+   * with whatever's above it — matches the "no heading on the first
+   * group" pattern in the design. */
+  heading?: string
+  items: NavEntry[]
+}
+
+/**
+ * Top of the sidebar: the install/start/stop server button. Stays
+ * separate from the routing nav because its state depends on the
+ * server lifecycle, not on what page the user is looking at.
+ */
+function ServerActionGroup() {
   const {
     installed,
     openInstall,
@@ -49,14 +74,12 @@ export function NavMain({
     startServer,
     stopServer,
     restartServer,
-    activePage,
-    setActivePage,
-    ahbotNeedsConfig,
   } = useServerState()
 
   const actionInFlight = serverActionStatus === "running"
-  // "Stop" or "Restart" is meaningful when the server is up or thrashing.
-  // We show the button-group + dropdown variant in both of those states.
+  // "Stop" or "Restart" is meaningful when the server is up or
+  // thrashing. We show the button-group + dropdown variant in both
+  // of those states.
   const showStopGroup =
     installed &&
     !actionInFlight &&
@@ -64,7 +87,7 @@ export function NavMain({
 
   return (
     <SidebarGroup>
-      <SidebarGroupContent className="flex flex-col gap-2">
+      <SidebarGroupContent>
         <SidebarMenu>
           <SidebarMenuItem className="flex items-center gap-2">
             {showStopGroup ? (
@@ -84,84 +107,71 @@ export function NavMain({
             )}
           </SidebarMenuItem>
         </SidebarMenu>
-        {/* Real, clickable nav entries — Dashboard + Modules. The rest
-            of the data.navMain items below are placeholders kept from
-            the shadcn starter (Lifecycle / Analytics / etc.) and stay
-            disabled until we build those pages out. */}
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Dashboard"
-              onClick={() => setActivePage("dashboard")}
-              isActive={activePage === "dashboard"}
-              disabled={!installed}
-            >
-              <HouseIcon />
-              <span>Dashboard</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={
-                ahbotNeedsConfig
-                  ? "Modules (Auction House Bot needs setup!)"
-                  : "Modules"
-              }
-              onClick={() => setActivePage("modules")}
-              isActive={activePage === "modules"}
-              disabled={!installed}
-              className="relative"
-            >
-              <PuzzlePieceIcon />
-              <span>Modules</span>
-              {/* Soft-blinking amber dot pulls the user toward Modules
-                  while AH Bot is installed-but-inert. The animate-ping
-                  ring + solid dot pattern is the conventional shadcn
-                  "needs attention" indicator. */}
-              {ahbotNeedsConfig && (
-                <span className="ml-auto flex size-2.5 items-center justify-center">
-                  <span className="absolute inline-flex size-2.5 animate-ping rounded-full bg-amber-400 opacity-75" />
-                  <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
-                </span>
-              )}
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Teleport"
-              onClick={() => setActivePage("teleport")}
-              isActive={activePage === "teleport"}
-              disabled={!installed}
-            >
-              <CompassIcon />
-              <span>Teleport</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Inventory"
-              onClick={() => setActivePage("inventory")}
-              isActive={activePage === "inventory"}
-              disabled={!installed}
-            >
-              <PackageIcon />
-              <span>Inventory</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-
-        <SidebarMenu>
-          {items.map((item) => (
-            <SidebarMenuItem key={item.title}>
-              <SidebarMenuButton tooltip={item.title} disabled>
-                {item.icon}
-                <span>{item.title}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
+  )
+}
+
+/**
+ * Renders the server-action button followed by an arbitrary list of
+ * navigation groups. Groups are rendered as separate `<SidebarGroup>`
+ * blocks, which gives natural vertical spacing between them.
+ *
+ * The shape of `groups` is dictated by app-sidebar.tsx — that's where
+ * "what's in the sidebar today" lives, so reordering / adding pages
+ * happens there, not here.
+ */
+export function NavMain({ groups }: { groups: NavGroupSpec[] }) {
+  const { installed, activePage, setActivePage } = useServerState()
+  return (
+    <>
+      <ServerActionGroup />
+      {groups.map((group, gi) => (
+        <SidebarGroup key={gi}>
+          {group.heading && (
+            <SidebarGroupLabel>{group.heading}</SidebarGroupLabel>
+          )}
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {group.items.map((entry) => {
+                const isDisabled = entry.disabled || !installed
+                const isActive =
+                  entry.page != null && activePage === entry.page
+                return (
+                  <SidebarMenuItem key={entry.title}>
+                    <SidebarMenuButton
+                      tooltip={entry.tooltip ?? entry.title}
+                      onClick={() => {
+                        if (!entry.disabled && entry.page) {
+                          setActivePage(entry.page)
+                        }
+                      }}
+                      isActive={isActive}
+                      disabled={isDisabled}
+                      className={entry.notify ? "relative" : undefined}
+                    >
+                      {entry.icon}
+                      <span>{entry.title}</span>
+                      {entry.notify && <NotificationDot />}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      ))}
+    </>
+  )
+}
+
+/** Pulsing amber dot — conventional shadcn "needs attention" indicator. */
+function NotificationDot() {
+  return (
+    <span className="ml-auto flex size-2.5 items-center justify-center">
+      <span className="absolute inline-flex size-2.5 animate-ping rounded-full bg-amber-400 opacity-75" />
+      <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+    </span>
   )
 }
 

@@ -1,8 +1,7 @@
 import * as React from "react"
 
 import { GlobalCharacterCard } from "@/components/global-character-card"
-import { NavDocuments } from "@/components/nav-documents"
-import { NavMain } from "@/components/nav-main"
+import { NavMain, type NavGroupSpec } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
 import { useServerState } from "@/components/server-state-context"
 import {
@@ -14,174 +13,85 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { SquaresFourIcon, ListIcon, ChartBarIcon, FolderIcon, SwordIcon, UsersIcon, CameraIcon, FileTextIcon, GearIcon, QuestionIcon, MagnifyingGlassIcon, DatabaseIcon, ChartLineIcon, FileIcon } from "@phosphor-icons/react"
+import {
+  CompassIcon,
+  DatabaseIcon,
+  GavelIcon,
+  GearIcon,
+  HouseIcon,
+  PuzzlePieceIcon,
+  QuestionIcon,
+  RobotIcon,
+  SwordIcon,
+  TipJarIcon,
+  UsersThreeIcon,
+} from "@phosphor-icons/react"
 import { WowIcon } from "@/components/wow-icon"
 
-const data = {
-  user: {
-    name: "shadcn",
-    email: "m@example.com",
-    avatar: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='24' fill='%23181f2a'/%3E%3Ccircle cx='48' cy='34' r='18' fill='%23f8fafc'/%3E%3Cpath d='M18 82c6-14 18-22 30-22s24 8 30 22' fill='%23f8fafc'/%3E%3C/svg%3E",
-  },
-  navMain: [
+/**
+ * Source-of-truth for the sidebar's nav structure. Adding a page =
+ * add a new entry here (and route for it in App.tsx + ActivePage).
+ *
+ * The "Inventory" + "Placeholder group #1" headings come from the
+ * `heading` field on the group — disabled placeholder entries
+ * (`disabled: true`) render but don't navigate, so users see what's
+ * coming as we build it out.
+ */
+function buildNavGroups(ahbotNeedsConfig: boolean): NavGroupSpec[] {
+  return [
     {
-      title: "Dashboard",
-      url: "#",
-      icon: (
-        <SquaresFourIcon
-        />
-      ),
-    },
-    {
-      title: "Lifecycle",
-      url: "#",
-      icon: (
-        <ListIcon
-        />
-      ),
-    },
-    {
-      title: "Analytics",
-      url: "#",
-      icon: (
-        <ChartBarIcon
-        />
-      ),
-    },
-    {
-      title: "Projects",
-      url: "#",
-      icon: (
-        <FolderIcon
-        />
-      ),
-    },
-    {
-      title: "Team",
-      url: "#",
-      icon: (
-        <UsersIcon
-        />
-      ),
-    },
-  ],
-  navClouds: [
-    {
-      title: "Capture",
-      icon: (
-        <CameraIcon
-        />
-      ),
-      isActive: true,
-      url: "#",
+      // No heading — top-level routes always present.
       items: [
+        { title: "Dashboard", icon: <HouseIcon />, page: "dashboard" },
         {
-          title: "Active Proposals",
-          url: "#",
+          title: "Modules",
+          icon: <PuzzlePieceIcon />,
+          page: "modules",
+          notify: ahbotNeedsConfig,
+          tooltip: ahbotNeedsConfig
+            ? "Modules (Auction House Bot needs setup!)"
+            : "Modules",
         },
-        {
-          title: "Archived",
-          url: "#",
-        },
+        { title: "Teleport", icon: <CompassIcon />, page: "teleport" },
       ],
     },
     {
-      title: "Proposal",
-      icon: (
-        <FileTextIcon
-        />
-      ),
-      url: "#",
+      heading: "Inventory",
       items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
+        // The page is still routed as `inventory` internally — only the
+        // display name changed to "Item Database".
+        { title: "Item Database", icon: <DatabaseIcon />, page: "inventory" },
+        { title: "Gear Library", icon: <SwordIcon />, disabled: true },
       ],
     },
     {
-      title: "Prompts",
-      icon: (
-        <FileTextIcon
-        />
-      ),
-      url: "#",
+      // Placeholder group — names + icons reflect what we plan to
+      // build, even though the screens aren't wired yet.
+      heading: "Placeholder group #1",
       items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
+        { title: "NPCs", icon: <UsersThreeIcon />, disabled: true },
+        { title: "Player Bots", icon: <RobotIcon />, disabled: true },
+        { title: "Auction House", icon: <GavelIcon />, disabled: true },
       ],
     },
-  ],
-  navSecondary: [
-    {
-      title: "Settings",
-      url: "#",
-      icon: (
-        <GearIcon
-        />
-      ),
-    },
-    {
-      title: "Get Help",
-      url: "#",
-      icon: (
-        <QuestionIcon
-        />
-      ),
-    },
-    {
-      title: "Search",
-      url: "#",
-      icon: (
-        <MagnifyingGlassIcon
-        />
-      ),
-    },
-  ],
-  documents: [
-    {
-      name: "Gear Library",
-      url: "#",
-      icon: (
-        <SwordIcon
-        />
-      ),
-    },
-    {
-      name: "Reports",
-      url: "#",
-      icon: (
-        <ChartLineIcon
-        />
-      ),
-    },
-    {
-      name: "Word Assistant",
-      url: "#",
-      icon: (
-        <FileIcon
-        />
-      ),
-    },
-  ],
+  ]
 }
 
+const SECONDARY_ITEMS = [
+  { title: "Settings", icon: <GearIcon />, url: "#" },
+  { title: "Get Help", icon: <QuestionIcon />, url: "#" },
+  { title: "Support Us", icon: <TipJarIcon />, url: "#" },
+]
+
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const { activePage, setActivePage } = useServerState()
-  // Wire the Settings entry to real routing while leaving Get Help /
-  // Search as href="#" stubs. The other two come from the shadcn
-  // starter and will get real targets when those features land.
-  const secondaryItems = data.navSecondary.map((item) =>
+  const { activePage, setActivePage, ahbotNeedsConfig } = useServerState()
+  const groups = React.useMemo(
+    () => buildNavGroups(ahbotNeedsConfig),
+    [ahbotNeedsConfig]
+  )
+  // Wire the Settings entry to real routing while Get Help / Support
+  // Us stay as href="#" stubs for now.
+  const secondaryItems = SECONDARY_ITEMS.map((item) =>
     item.title === "Settings"
       ? {
           ...item,
@@ -208,8 +118,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
-        <NavDocuments items={data.documents} />
+        <NavMain groups={groups} />
         <NavSecondary items={secondaryItems} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>

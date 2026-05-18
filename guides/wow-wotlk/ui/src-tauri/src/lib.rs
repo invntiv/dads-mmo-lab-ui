@@ -93,6 +93,7 @@ pub fn run() {
             teleport::teleport_character_to_coords,
             inventory::search_items,
             inventory::get_item_details,
+            inventory::get_items_by_entries,
             inventory::send_item_to_character,
             client_assets::get_icon_cache_status,
             client_assets::extract_item_icons,

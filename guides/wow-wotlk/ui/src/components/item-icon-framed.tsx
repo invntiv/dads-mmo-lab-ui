@@ -71,14 +71,17 @@ export function ItemIconFramed({
   const sizeClass = SIZE_CLASS[size]
   const px = SIZE_PX[size]
 
-  // Frame: dark border with subtle bevel. Outer ring darker, inner
-  // edges lighter — matches the in-game item-slot frame closely.
+  // Frame: mimics the in-game item-slot. Composed of multiple layers
+  // of inset/outer shadow on a near-black background:
+  //   - hard 1px black outer edge so the frame stands off any bg
+  //   - 1px warm-tan inner ring (rgb(168,144,96)/30%) — the metallic
+  //     "frame" you see on Wowhead's .iconlarge
+  //   - top-edge highlight + bottom-edge shadow for the bevel
+  //   - subtle drop shadow to float the icon off its container
   const frameClass = cn(
     sizeClass,
-    "relative inline-block shrink-0 rounded-[3px] border border-black/80 bg-zinc-900",
-    // Inset shadow gives a 1px highlight at the top and 1px darken at
-    // the bottom — reads as a beveled frame at any size.
-    "shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-1px_0_rgba(0,0,0,0.6)]",
+    "relative inline-block shrink-0 overflow-hidden rounded-[3px] bg-black",
+    "shadow-[inset_0_0_0_1px_rgba(168,144,96,0.55),inset_0_1px_0_rgba(255,232,160,0.18),inset_0_-1px_0_rgba(0,0,0,0.8),0_1px_2px_rgba(0,0,0,0.6),0_0_0_1px_rgba(0,0,0,0.9)]",
     className
   )
 

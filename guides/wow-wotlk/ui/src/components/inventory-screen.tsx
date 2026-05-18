@@ -307,7 +307,7 @@ export function InventoryScreen() {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
             <h1 className="font-heading text-2xl font-semibold leading-tight">
-              Inventory
+              Item Database
             </h1>
             <p className="text-sm text-muted-foreground">
               Search the entire item database and deliver anything you
@@ -415,47 +415,47 @@ function ItemTile({
   const iconName = iconMap[String(item.display_id)]
   return (
     <div className="group flex items-center gap-3 rounded-md border border-border bg-card p-3 transition-colors hover:border-primary/40">
-      {/* Wrap the framed icon in ItemTooltip — hover anywhere on the
-          icon to see the full WoW-style tooltip. The name + meta block
-          to the right stays plain so we don't catch hover on the
-          whole row (less jumpy when scanning the grid). */}
+      {/* Hover anywhere on the icon-and-name region to open the
+          tooltip. Wowhead link + Send button live OUTSIDE this
+          wrapper as siblings, so hovering them doesn't fire the
+          tooltip — they're discrete actions that don't need an
+          info popover competing for attention. */}
       <ItemTooltip
         entry={item.entry}
-        iconMap={iconMap}
         tooltipData={tooltipData}
         side="right"
       >
-        <span className="shrink-0 cursor-help">
+        <div className="flex min-w-0 flex-1 cursor-help items-center gap-3">
           <ItemIconFramed
             iconName={iconName}
             entry={item.entry}
             quality={item.quality}
-            size="medium"
+            size="large"
             alt={item.name}
           />
-        </span>
+          <div className="min-w-0 flex-1">
+            <div
+              // line-clamp-2 lets long names wrap to a second line
+              // instead of truncating to identical "Arcanum of Bl…" /
+              // "Arcanum of Bu…" rows. font-semibold + the brighter
+              // quality palette keep the name legible on the card.
+              className={cn(
+                "line-clamp-2 break-words text-sm font-semibold leading-tight",
+                quality
+              )}
+              title={item.name}
+            >
+              {item.name}
+            </div>
+            <div className="mt-1 truncate text-[10px] text-muted-foreground">
+              ilvl {item.item_level}
+              {item.required_level > 0 && ` · req lvl ${item.required_level}`}
+              {" · "}
+              <span className="font-mono">#{item.entry}</span>
+            </div>
+          </div>
+        </div>
       </ItemTooltip>
-      <div className="min-w-0 flex-1">
-        <div
-          // line-clamp-2 lets long names wrap to a second line instead
-          // of truncating to identical "Arcanum of Bl…" / "Arcanum of
-          // Bu…" rows. font-semibold + the brighter quality palette
-          // above keep the name legible against the card background.
-          className={cn(
-            "line-clamp-2 break-words text-sm font-semibold leading-tight",
-            quality
-          )}
-          title={item.name}
-        >
-          {item.name}
-        </div>
-        <div className="mt-1 truncate text-[10px] text-muted-foreground">
-          ilvl {item.item_level}
-          {item.required_level > 0 && ` · req lvl ${item.required_level}`}
-          {" · "}
-          <span className="font-mono">#{item.entry}</span>
-        </div>
-      </div>
       <a
         href={`https://www.wowhead.com/wotlk/item=${item.entry}`}
         target="_blank"

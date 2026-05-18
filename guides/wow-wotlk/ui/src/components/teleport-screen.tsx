@@ -220,19 +220,22 @@ export function TeleportScreen() {
           </Button>
         </div>
 
-        <CustomCoordsForm onTeleport={teleToCoords} busy={busy} />
-      </header>
-
-      <div className="min-h-0 space-y-3 overflow-hidden">
-        {favoriteLocations.length > 0 && (
+        {/* Favorites + Custom coords sit side-by-side under the
+            header. Favorites takes the full half-row even when
+            empty so the grid stays balanced — coords form was too
+            wide alone after the character picker moved out. */}
+        <div className="grid gap-3 md:grid-cols-2">
           <FavoritesStrip
             favorites={favoriteLocations}
             onTeleport={tele}
             onUnfavorite={toggleFavorite}
             busy={busy}
           />
-        )}
+          <CustomCoordsForm onTeleport={teleToCoords} busy={busy} />
+        </div>
+      </header>
 
+      <div className="min-h-0 space-y-3 overflow-hidden">
         <ContinentTabs
           active={activeContinent}
           onChange={setActiveContinent}
@@ -374,31 +377,38 @@ function FavoritesStrip({
         <StarIcon className="size-3.5" weight="fill" />
         Favorites
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {favorites.map((loc) => (
-          <div
-            key={loc.id}
-            className="group flex items-center gap-1 rounded-full border border-amber-500/40 bg-background px-2.5 py-1 text-xs"
-          >
-            <button
-              type="button"
-              onClick={() => onTeleport(loc)}
-              disabled={busy}
-              className="font-medium hover:text-amber-700 dark:hover:text-amber-400 disabled:opacity-50"
+      {favorites.length === 0 ? (
+        <div className="text-xs text-amber-700/70 dark:text-amber-300/70">
+          No favorites yet. Tap the heart on any location below to save
+          it here for quick access.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {favorites.map((loc) => (
+            <div
+              key={loc.id}
+              className="group flex items-center gap-1 rounded-full border border-amber-500/40 bg-background px-2.5 py-1 text-xs"
             >
-              {loc.name}
-            </button>
-            <button
-              type="button"
-              onClick={() => onUnfavorite(loc.id)}
-              aria-label="Remove favorite"
-              className="text-amber-600/60 hover:text-amber-700 dark:hover:text-amber-400"
-            >
-              <HeartIcon className="size-3" weight="fill" />
-            </button>
-          </div>
-        ))}
-      </div>
+              <button
+                type="button"
+                onClick={() => onTeleport(loc)}
+                disabled={busy}
+                className="font-medium hover:text-amber-700 dark:hover:text-amber-400 disabled:opacity-50"
+              >
+                {loc.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => onUnfavorite(loc.id)}
+                aria-label="Remove favorite"
+                className="text-amber-600/60 hover:text-amber-700 dark:hover:text-amber-400"
+              >
+                <HeartIcon className="size-3" weight="fill" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

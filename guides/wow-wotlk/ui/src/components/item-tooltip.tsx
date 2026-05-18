@@ -5,7 +5,6 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card"
-import { ItemIconFramed } from "@/components/item-icon-framed"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import {
   BONDING_LABELS,
@@ -130,17 +129,40 @@ async function loadItemDetails(entry: number): Promise<ItemDetails> {
   return p
 }
 
+// Minimal projection — name + quality — for set-member rendering and
+// any other "I just need the colored name" surface. Cached per entry.
+export type ItemMini = {
+  entry: number
+  name: string
+  quality: number
+}
+
+const miniCache: Map<number, ItemMini> = new Map()
+
+async function loadItemMinis(entries: number[]): Promise<ItemMini[]> {
+  // Filter out already-cached ids so we only fetch what's missing.
+  const missing = entries.filter((e) => !miniCache.has(e))
+  if (missing.length > 0) {
+    const rows = await trackedInvoke<ItemMini[]>("get_items_by_entries", {
+      entries: missing,
+    })
+    for (const r of rows) miniCache.set(r.entry, r)
+  }
+  // Return in the SAME ORDER as the input — the ItemSet.dbc array
+  // ordering is meaningful (matches the in-game tooltip), so preserve it.
+  return entries
+    .map((e) => miniCache.get(e))
+    .filter((r): r is ItemMini => r != null)
+}
+
 export function ItemTooltip({
   entry,
-  iconMap,
   tooltipData,
   children,
   side = "right",
   align = "start",
 }: {
   entry: number
-  /** displayid → icon-name map from the icon-cache enrichment. */
-  iconMap?: Record<string, string>
   /** Full tooltip-cache from Settings enrichment (optional). When
    * absent, spell/set lines are skipped. */
   tooltipData?: TooltipData | null
@@ -183,19 +205,20 @@ export function ItemTooltip({
       <HoverCardContent
         side={side}
         align={align}
-        // Replace shadcn's default popover skin with the WoW tooltip
-        // look — near-black bg with a faint warm-tone border, no
-        // rounded corners feel, generous padding, monospace-free.
-        className="w-[320px] rounded-md border border-[#3a2f1e] bg-[#0a0a14]/95 p-3 text-[12.5px] leading-snug text-white shadow-2xl backdrop-blur"
+        // Replace shadcn's default popover skin with the WoW in-game
+        // tooltip look: near-black bg, a thin silver 1px border + a
+        // soft inset darken to suggest the beveled metal frame WoW
+        // uses, and a heavy drop shadow so the popover reads as
+        // floating above the page.
+        className={cn(
+          "w-[320px] rounded-md border border-[#9a9aaa]/70 bg-[#070712]/95 p-3 text-[12.5px] leading-snug text-white backdrop-blur",
+          "shadow-[inset_0_0_0_1px_rgba(0,0,0,0.7),0_8px_24px_rgba(0,0,0,0.7)]"
+        )}
       >
         {error ? (
           <div className="text-rose-400">{error}</div>
         ) : details ? (
-          <TooltipBody
-            details={details}
-            iconMap={iconMap}
-            tooltipData={tooltipData}
-          />
+          <TooltipBody details={details} tooltipData={tooltipData} />
         ) : (
           <div className="flex items-center gap-2 text-zinc-400">
             <span className="size-3 animate-pulse rounded-full bg-zinc-600" />
@@ -209,11 +232,9 @@ export function ItemTooltip({
 
 function TooltipBody({
   details,
-  iconMap,
   tooltipData,
 }: {
   details: ItemDetails
-  iconMap?: Record<string, string>
   tooltipData?: TooltipData | null
 }) {
   const quality = QUALITY_COLORS[details.quality] ?? "text-white"
@@ -221,7 +242,6 @@ function TooltipBody({
   const type = itemTypeLabel(details.class, details.subclass)
   const bondingText = BONDING_LABELS[details.bonding] ?? ""
   const isUnique = details.maxCount === 1
-  const iconName = iconMap?.[String(details.displayId)] ?? null
 
   // Damage line. dmg_type=0 means physical → just "Damage"; >0 is an
   // elemental suffix ("Nature Damage" etc.). Secondary damage line
@@ -258,164 +278,178 @@ function TooltipBody({
     ? tooltipData?.sets?.[String(details.itemSet)]
     : undefined
 
+  // Fetch set-member names so the set block can render "Warglaive of
+  // Azzinoth" instead of "Item #32837". One bulk query per tooltip
+  // open; result memoized on the module-level itemMiniCache so flipping
+  // between tooltips for set siblings is instant.
+  const [setMembers, setSetMembers] = React.useState<ItemMini[] | null>(null)
+  React.useEffect(() => {
+    if (!setEntry || setEntry.items.length === 0 || !isTauri()) {
+      setSetMembers(null)
+      return
+    }
+    let cancelled = false
+    loadItemMinis(setEntry.items)
+      .then((rows) => {
+        if (!cancelled) setSetMembers(rows)
+      })
+      .catch((e) => console.warn("get_items_by_entries failed", e))
+    return () => {
+      cancelled = true
+    }
+  }, [setEntry])
+
   const money = formatMoney(details.sellPrice)
   const showMoney = details.sellPrice > 0
 
+  // The tooltip body is rendered as stacked "sections" separated by
+  // a paragraph-style gap (`pt-3`). Within a section, rows are tight
+  // (`space-y-0.5`) — mirrors WoW's in-game tooltip rhythm.
   return (
-    <div className="flex gap-3">
-      {/* Top-left icon — mirrors how Wowhead lays out the in-tooltip
-          icon next to the right-rail metadata. */}
-      <ItemIconFramed
-        iconName={iconName}
-        entry={details.entry}
-        quality={details.quality}
-        size="large"
-      />
-
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-start justify-between gap-3">
-          <div className={cn("text-[14px] font-semibold leading-tight", quality)}>
-            {details.name}
-          </div>
-          {/* Phase indicator — WoW shows "Phase 1" for vanilla items.
-              Hardcoded for now; future work could map item ranges to
-              expansion phases like Wowhead does. */}
-          <div className="shrink-0 text-right text-[10px] leading-tight text-zinc-400">
-            <div>Phase</div>
-            <div>1</div>
-          </div>
-        </div>
-        {details.itemLevel > 0 && (
-          <div className="text-[#ffd200]">Item Level {details.itemLevel}</div>
-        )}
-        {bondingText && <div>{bondingText}</div>}
-        {isUnique && <div>Unique</div>}
-
-        {/* Slot + type row, justify-between like the in-game tooltip. */}
-        {(slot || type) && (
-          <div className="flex justify-between gap-3">
-            <span>{slot}</span>
-            {type && <span>{type}</span>}
-          </div>
-        )}
-
-        {/* Damage block. Two-line damage (Thunderfury-style) uses the
-            "+ A - B Element Damage" form for the second line. */}
-        {hasDamage1 && (
-          <div className="flex justify-between gap-3">
-            <span>
-              {damageLine(details.dmgMin1, details.dmgMax1, details.dmgType1, false)}
-            </span>
-            {speed > 0 && (
-              <span>Speed {speed.toFixed(2).replace(/\.?0+$/, "")}</span>
-            )}
-          </div>
-        )}
-        {hasDamage2 && (
-          <div>
-            {damageLine(details.dmgMin2, details.dmgMax2, details.dmgType2, true)}
-          </div>
-        )}
-        {dps != null && (
-          <div className="text-zinc-300">
-            ({dps.toFixed(2)} damage per second)
-          </div>
-        )}
-
-        {/* Armor (for armor items). */}
-        {details.armor > 0 && <div>{details.armor.toLocaleString()} Armor</div>}
-
-        {/* Stat block — +N STAT lines. Item ordering is preserved
-            since stat_type1..10 in the schema is meaningful. */}
-        {details.stats.map((s, i) => (
-          <div key={i}>
-            {s.value >= 0 ? "+" : ""}
-            {s.value} {STAT_TYPE_LABELS[s.statType] ?? `Stat ${s.statType}`}
-          </div>
-        ))}
-
-        {/* Resistance lines, only non-zero ones. */}
-        {resistances.map((r) => (
-          <div key={r.label}>
-            {r.value >= 0 ? "+" : ""}
-            {r.value} {r.label} Resistance
-          </div>
-        ))}
-
-        {details.maxDurability > 0 && (
-          <div>
-            Durability {details.maxDurability} / {details.maxDurability}
-          </div>
-        )}
-
-        {details.requiredLevel > 0 && (
-          <div>Requires Level {details.requiredLevel}</div>
-        )}
-
-        {/* Spell-attached lines: Equip:/Use:/Chance on hit:. Pulls
-            prose from the tooltip cache; if the cache hasn't been
-            extracted yet we skip these silently. */}
-        {details.spells.map((s, i) => {
-          const spell = tooltipData?.spells?.[String(s.spellId)]
-          if (!spell?.description) return null
-          const verb = SPELL_TRIGGER_LABELS[s.trigger] ?? "Equip"
-          const cd =
-            s.trigger === 0 && s.cooldownMs > 0
-              ? ` (${Math.round(s.cooldownMs / 1000)} sec cooldown)`
-              : ""
-          return (
-            <div key={i} className="text-green-400">
-              {verb}: {spell.description}
-              {cd}
-            </div>
-          )
-        })}
-
-        {/* Item set lines: name, member items (gray when not equipped
-            — we don't know equipment state so always gray), then
-            (N): bonus-description lines. */}
-        {setEntry && (
-          <div className="mt-1 space-y-0.5 border-t border-white/10 pt-1">
-            <div className="text-yellow-300">{setEntry.name}</div>
-            {setEntry.items.length > 0 && (
-              <div className="text-zinc-500">
-                {setEntry.items.map((id) => (
-                  <div key={id} className="pl-2">
-                    · Item #{id}
-                  </div>
-                ))}
-              </div>
-            )}
-            {setEntry.bonuses.map((b, i) => {
-              const spell = tooltipData?.spells?.[String(b.spell_id)]
-              return (
-                <div key={i} className="text-zinc-400">
-                  ({b.threshold}) Set:{" "}
-                  {spell?.description ?? `Spell ${b.spell_id}`}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* Flavor text — italic yellow, classic WoW formatting. */}
-        {details.description && (
-          <div className="italic text-[#ffd200]">"{details.description}"</div>
-        )}
-
-        {/* Sell price as gold/silver/copper. Hidden when item has no
-            vendor price (quest items etc.). */}
-        {showMoney && (
-          <div className="flex items-center gap-1">
-            <span>Sell Price:</span>
-            {money.gold > 0 && <Coin amount={money.gold} kind="gold" />}
-            {money.silver > 0 && <Coin amount={money.silver} kind="silver" />}
-            {(money.copper > 0 || (money.gold === 0 && money.silver === 0)) && (
-              <Coin amount={money.copper} kind="copper" />
-            )}
-          </div>
-        )}
+    <div className="space-y-0.5">
+      {/* HEADER — name + ilvl + bind/unique. */}
+      <div className={cn("text-[14px] font-semibold leading-tight", quality)}>
+        {details.name}
       </div>
+      {details.itemLevel > 0 && (
+        <div className="text-[#ffd200]">Item Level {details.itemLevel}</div>
+      )}
+      {bondingText && <div>{bondingText}</div>}
+      {isUnique && <div>Unique</div>}
+
+      {/* SLOT / TYPE — justify-between like the in-game tooltip. */}
+      {(slot || type) && (
+        <div className="flex justify-between gap-3">
+          <span>{slot}</span>
+          {type && <span>{type}</span>}
+        </div>
+      )}
+
+      {/* DAMAGE — primary line + optional secondary elemental line +
+          DPS. Speed sits on the right of the primary damage row. */}
+      {hasDamage1 && (
+        <div className="flex justify-between gap-3">
+          <span>
+            {damageLine(details.dmgMin1, details.dmgMax1, details.dmgType1, false)}
+          </span>
+          {speed > 0 && (
+            <span>Speed {speed.toFixed(2).replace(/\.?0+$/, "")}</span>
+          )}
+        </div>
+      )}
+      {hasDamage2 && (
+        <div>
+          {damageLine(details.dmgMin2, details.dmgMax2, details.dmgType2, true)}
+        </div>
+      )}
+      {dps != null && (
+        <div className="text-zinc-300">
+          ({dps.toFixed(2)} damage per second)
+        </div>
+      )}
+
+      {/* ARMOR (armor items only). */}
+      {details.armor > 0 && <div>{details.armor.toLocaleString()} Armor</div>}
+
+      {/* STATS — +N STAT lines. Item ordering is preserved since
+          stat_type1..10 in the schema is meaningful. */}
+      {details.stats.map((s, i) => (
+        <div key={i}>
+          {s.value >= 0 ? "+" : ""}
+          {s.value} {STAT_TYPE_LABELS[s.statType] ?? `Stat ${s.statType}`}
+        </div>
+      ))}
+
+      {/* RESISTANCES — only non-zero lines. */}
+      {resistances.map((r) => (
+        <div key={r.label}>
+          {r.value >= 0 ? "+" : ""}
+          {r.value} {r.label} Resistance
+        </div>
+      ))}
+
+      {details.maxDurability > 0 && (
+        <div>
+          Durability {details.maxDurability} / {details.maxDurability}
+        </div>
+      )}
+
+      {details.requiredLevel > 0 && (
+        <div>Requires Level {details.requiredLevel}</div>
+      )}
+
+      {/* EQUIP / USE / CHANCE ON HIT — green prose. Spell descriptions
+          come from the tooltip cache; if not extracted yet, we silently
+          skip these lines rather than show "Equip: Spell 12345". */}
+      {details.spells.map((s, i) => {
+        const spell = tooltipData?.spells?.[String(s.spellId)]
+        if (!spell?.description) return null
+        const verb = SPELL_TRIGGER_LABELS[s.trigger] ?? "Equip"
+        const cd =
+          s.trigger === 0 && s.cooldownMs > 0
+            ? ` (${Math.round(s.cooldownMs / 1000)} sec cooldown)`
+            : ""
+        return (
+          <div key={i} className="text-green-400">
+            {verb}: {spell.description}
+            {cd}
+          </div>
+        )
+      })}
+
+      {/* ITEM SET — blank-line gap above the set header, blank-line
+          gap between member list and bonuses (`pt-3` on each sub-
+          block). Member names come from the bulk-fetched setMembers;
+          while loading we show grey-muted entry ids as a placeholder. */}
+      {setEntry && (
+        <div className="pt-3 space-y-0.5">
+          <div className="text-[#7eb6ff]">
+            {setEntry.name} (0/{setEntry.items.length})
+          </div>
+          {setEntry.items.length > 0 && (
+            <div className="space-y-0.5">
+              {setEntry.items.map((id) => {
+                const member = setMembers?.find((m) => m.entry === id)
+                return (
+                  <div key={id} className="pl-3 text-zinc-500">
+                    {member?.name ?? `Item #${id}`}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {setEntry.bonuses.length > 0 && (
+            <div className="pt-3 space-y-0.5">
+              {setEntry.bonuses.map((b, i) => {
+                const spell = tooltipData?.spells?.[String(b.spell_id)]
+                return (
+                  <div key={i} className="text-zinc-400">
+                    ({b.threshold}) Set:{" "}
+                    {spell?.description ?? `Spell ${b.spell_id}`}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* FLAVOR TEXT — gap-above, italic yellow. */}
+      {details.description && (
+        <div className="pt-3 italic text-[#ffd200]">"{details.description}"</div>
+      )}
+
+      {/* SELL PRICE — gap-above, hidden for quest items / no-vendor. */}
+      {showMoney && (
+        <div className="flex items-center gap-1 pt-3">
+          <span>Sell Price:</span>
+          {money.gold > 0 && <Coin amount={money.gold} kind="gold" />}
+          {money.silver > 0 && <Coin amount={money.silver} kind="silver" />}
+          {(money.copper > 0 || (money.gold === 0 && money.silver === 0)) && (
+            <Coin amount={money.copper} kind="copper" />
+          )}
+        </div>
+      )}
     </div>
   )
 }

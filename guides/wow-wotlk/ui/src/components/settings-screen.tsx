@@ -10,6 +10,7 @@ import {
   PlugsIcon,
   ScrollIcon,
   SlidersIcon,
+  SteamLogoIcon,
   SparkleIcon,
   TrashIcon,
   WarningCircleIcon,
@@ -21,7 +22,10 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Slider } from "@/components/ui/slider"
 import { ControllerSupportSection } from "@/components/controller-support-section"
+import { SteamIntegrationSection } from "@/components/steam-integration-section"
 import { UpdateChecker } from "@/components/update-checker"
+import { ScrollProgress } from "@/components/ui/scroll-progress"
+import { Separator } from "@/components/ui/separator"
 import { useServerState } from "@/components/server-state-context"
 import { useSfx } from "@/lib/sfx"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
@@ -87,6 +91,9 @@ export function SettingsScreen() {
   // Dashboard paperdoll, any ItemTooltip) pick up the new data
   // without an app restart.
   const { refreshEnrichmentCaches } = useServerState()
+  // Tracks the scroll progress of the sections list below — feeds the
+  // gradient bar at the top of the scroll area.
+  const scrollRef = React.useRef<HTMLDivElement>(null)
 
   const [iconStatus, setIconStatus] = React.useState<IconCacheStatus | null>(
     null
@@ -263,7 +270,7 @@ export function SettingsScreen() {
   }
 
   return (
-    <div className="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4 p-6">
+    <div className="grid h-full grid-rows-[auto_auto_minmax(0,1fr)] gap-4 p-6">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 font-heading text-2xl font-semibold leading-tight">
           <GearIcon className="size-6 shrink-0 text-muted-foreground" />
@@ -276,7 +283,15 @@ export function SettingsScreen() {
         </p>
       </header>
 
-      <div className="min-h-0 space-y-6 overflow-y-auto pr-1 pb-3">
+      <ScrollProgress
+        containerRef={scrollRef}
+        className="relative h-[3px] w-full rounded-full"
+      />
+
+      <div
+        ref={scrollRef}
+        className="min-h-0 space-y-10 overflow-y-auto pr-1 pb-3"
+      >
         <Section
           icon={<SlidersIcon className="size-5 text-muted-foreground" />}
           title="Audio"
@@ -284,6 +299,8 @@ export function SettingsScreen() {
         >
           <AudioSettings />
         </Section>
+
+        <SectionDivider />
 
         <Section
           title="Data enrichment"
@@ -369,6 +386,8 @@ export function SettingsScreen() {
           </div>
         </Section>
 
+        <SectionDivider />
+
         <Section
           title="WoW client"
           subtitle="Manage the connection to your local WoW 3.3.5a install. Connecting + setting the realmlist happen on the Dashboard via the WoW Client card; disconnecting (Forget) lives here so it can't be triggered by accident."
@@ -388,7 +407,21 @@ export function SettingsScreen() {
           />
         </Section>
 
+        <SectionDivider />
+
+        <Section
+          icon={<SteamLogoIcon className="size-5 text-muted-foreground" />}
+          title="Steam Integration"
+          subtitle="Add The Lab and your WoW client to Steam as non-Steam games so they show up in Gaming Mode. Steam must be closed first — we rewrite shortcuts.vdf on disk and Steam keeps an in-memory copy while it's running."
+        >
+          <SteamIntegrationSection />
+        </Section>
+
+        <SectionDivider />
+
         <ControllerSupportSection />
+
+        <SectionDivider />
 
         <Section
           icon={<ArrowClockwiseIcon className="size-5 text-muted-foreground" />}
@@ -399,6 +432,17 @@ export function SettingsScreen() {
         </Section>
       </div>
     </div>
+  )
+}
+
+/** A subtle, centered divider used between Settings sections. */
+function SectionDivider() {
+  return (
+    <Separator
+      orientation="horizontal"
+      className="mx-auto !w-3/5"
+      aria-hidden
+    />
   )
 }
 

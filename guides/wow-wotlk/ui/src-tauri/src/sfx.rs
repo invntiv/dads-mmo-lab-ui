@@ -16,35 +16,49 @@ use std::process::{Command, Stdio};
 
 struct Cue {
     name: &'static str,
+    /// Extension as written to the temp file. pw-play/libsndfile use it
+    /// for format sniffing, so .wav cues must stay .wav, etc.
+    ext: &'static str,
     bytes: &'static [u8],
 }
 
 const CUES: &[Cue] = &[
     Cue {
         name: "questActivate",
+        ext: "ogg",
         bytes: include_bytes!("../../src/assets/audio/sfx/QuestActivate.ogg"),
     },
     Cue {
         name: "questComplete",
+        ext: "ogg",
         bytes: include_bytes!("../../src/assets/audio/sfx/QuestComplete.ogg"),
     },
     Cue {
         name: "levelUp",
+        ext: "ogg",
         bytes: include_bytes!("../../src/assets/audio/sfx/LevelUp.ogg"),
     },
     Cue {
         name: "stealth",
+        ext: "ogg",
         bytes: include_bytes!("../../src/assets/audio/sfx/Stealth.ogg"),
+    },
+    Cue {
+        name: "splash",
+        ext: "wav",
+        bytes: include_bytes!(
+            "../../src/assets/audio/sfx/KMRBI_FDK_fx_impact_startup_A.wav"
+        ),
     },
 ];
 
-/// Write the embedded cue to `$TMPDIR/dml-sfx/<name>.ogg` once. Players
-/// need a file path; the bytes are baked into the binary so there's no
-/// resource-dir/FUSE path to resolve.
+/// Write the embedded cue to `$TMPDIR/dml-sfx/<name>.<ext>` once.
+/// Players need a file path; the bytes are baked into the binary so
+/// there's no resource-dir/FUSE path to resolve.
 fn materialize(cue: &Cue) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("dml-sfx");
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir sfx tmp: {e}"))?;
-    let path = dir.join(format!("{}.ogg", cue.name));
+    let path = dir.join(format!("{}.{}", cue.name, cue.ext));
     if !path.exists() {
         let mut f =
             std::fs::File::create(&path).map_err(|e| format!("write sfx: {e}"))?;

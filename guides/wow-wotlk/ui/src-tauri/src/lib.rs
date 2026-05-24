@@ -13,6 +13,7 @@ mod modules;
 mod server;
 mod sfx;
 mod soap;
+mod steam_shortcuts;
 mod teleport;
 mod wow_client;
 
@@ -141,6 +142,8 @@ pub fn run() {
             controller::install_consoleportlk,
             controller::find_wow_steam_shortcut,
             controller::apply_controller_preset,
+            steam_shortcuts::get_steam_integration_status,
+            steam_shortcuts::add_to_steam,
             sfx::play_sfx
         ])
         .on_page_load(|webview, payload| {

@@ -5546,6 +5546,7 @@ name = "the-lab"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
+ "crc32fast",
  "dirs 5.0.1",
  "image",
  "libc",

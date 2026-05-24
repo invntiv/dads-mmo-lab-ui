@@ -17,7 +17,12 @@ import { isTauri } from "@/lib/tauri"
  * out to the Deck's PipeWire player. See src-tauri/src/sfx.rs.
  */
 
-export type SfxName = "questActivate" | "questComplete" | "levelUp" | "stealth"
+export type SfxName =
+  | "questActivate"
+  | "questComplete"
+  | "levelUp"
+  | "stealth"
+  | "splash"
 
 export type SfxPrefs = {
   enabled: boolean

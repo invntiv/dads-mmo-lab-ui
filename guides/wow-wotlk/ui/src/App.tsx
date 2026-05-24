@@ -1,6 +1,8 @@
+import * as React from "react"
 import type { CSSProperties } from "react"
 
 import { AhBotIntroOverlay } from "@/components/ahbot-intro-overlay"
+import { SplashScreen } from "@/components/splash-screen"
 import { AppSidebar } from "@/components/app-sidebar"
 import { DashboardPlayerView } from "@/components/dashboard-player-view"
 import { HelpScreen } from "@/components/help-screen"
@@ -23,11 +25,16 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { WelcomeScreen } from "@/components/welcome-screen"
 
 export default function App() {
+  // Splash overlay sits above the shell until it fades out (3s window
+  // with a 500ms fade). The app behind it mounts/renders in parallel,
+  // so by the time the splash clears the UI is ready.
+  const [splashDone, setSplashDone] = React.useState(false)
   return (
     <TooltipProvider>
       <ServerStateProvider>
         <AppShell />
       </ServerStateProvider>
+      {!splashDone && <SplashScreen onDone={() => setSplashDone(true)} />}
     </TooltipProvider>
   )
 }

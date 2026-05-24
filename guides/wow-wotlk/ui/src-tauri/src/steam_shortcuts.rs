@@ -67,16 +67,17 @@ pub enum AddOutcome {
 // We bundle a per-target set and only copy what we have — missing slots
 // simply don't land, and Steam falls back to its generic tile.
 // The Lab — properly sized library art (PNG) provided by the maintainer.
+// Note: we intentionally don't bundle the logo overlay (1280×720); when a
+// non-Steam shortcut has no logo, Steam shows the AppName over the hero,
+// which matches store-bought titles in the library.
 const THELAB_HEADER:  &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryHeader_Capsule_920x430.png");
 const THELAB_CAPSULE: &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryCapsule_VerticalCover_600x900.png");
 const THELAB_HERO:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryHero_WideBanner_3840x1240.png");
-const THELAB_LOGO:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryLogo_Overlay_1280x720.png");
 const THELAB_ICON:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_ShortcupAppIcon_256x256.png");
-// WoW — same five-asset pattern as The Lab.
+// WoW — same four-asset set (header, vertical capsule, hero, icon).
 const WOW_HEADER:  &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryHeader_Capsule_920x430.png");
 const WOW_CAPSULE: &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryCapsule_VerticalCover_600x900.png");
 const WOW_HERO:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryHero_WideBanner1920x620.jpg");
-const WOW_LOGO:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryLogo_Overlay_1280x720.png");
 const WOW_ICON:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_ShortcupAppIcon_256x256.jpg");
 
 #[derive(Serialize, Debug, Clone)]
@@ -172,12 +173,37 @@ pub fn add_to_steam(target: SteamTarget) -> Result<AddOutcome, String> {
         .unwrap_or_default();
     let appid = steam_appid(&exe, &name);
 
-    // Existing file → splice; missing → create from scratch.
-    let existing = std::fs::read(&shortcuts_path).ok();
+    // Read existing; recover from previously-malformed writes (orphan
+    // entries floating at the file root) by treating them as empty.
+    // Those broken bytes were produced by an earlier version of this
+    // splice and Steam ignores them anyway — discarding is safe.
+    let raw_existing = std::fs::read(&shortcuts_path).ok();
+    let existing: Option<Vec<u8>> = match raw_existing {
+        Some(data) if is_malformed_orphaned(&data) => {
+            log::warn!(
+                "shortcuts.vdf ({} B) was malformed (orphan entries at root). \
+                 Resetting to the empty template before splicing — broken \
+                 entries Steam already ignored are discarded.",
+                data.len()
+            );
+            Some(EMPTY_SHORTCUTS.to_vec())
+        }
+        other => other,
+    };
+
+    log::info!(
+        "add_to_steam target={:?} appid={} exe={:?} start_dir={:?} existing_bytes={:?}",
+        target,
+        appid,
+        exe,
+        start_dir,
+        existing.as_ref().map(|d| d.len())
+    );
 
     if let Some(data) = &existing {
         let appids = parse_appids(data);
         if appids.contains(&appid) {
+            log::info!("add_to_steam: appid {} already present, refreshing art + compat", appid);
             // Refresh artwork + compat tool on duplicate add — cheap,
             // idempotent, and useful after an updated build.
             let artwork_files = install_artwork(&user_dir, target, appid);
@@ -221,12 +247,14 @@ pub fn add_to_steam(target: SteamTarget) -> Result<AddOutcome, String> {
     let new_bytes = match existing {
         Some(data) => splice_entry(&data, &entry_bytes)?,
         None => {
-            // Empty file: build the whole tree.
+            // No file at all — build the canonical tree:
+            // `\x00 shortcuts \x00 <entry> \x08 (close shortcuts) \x08 (close root)`.
             let mut buf = Vec::new();
             buf.push(0x00);
             write_cstr(&mut buf, "shortcuts");
             buf.extend_from_slice(&entry_bytes);
-            buf.push(0x08); // close shortcuts
+            buf.push(0x08);
+            buf.push(0x08);
             buf
         }
     };
@@ -250,9 +278,23 @@ pub fn add_to_steam(target: SteamTarget) -> Result<AddOutcome, String> {
     std::fs::write(&tmp, &new_bytes).map_err(|e| format!("write tmp: {e}"))?;
     std::fs::rename(&tmp, &shortcuts_path)
         .map_err(|e| format!("rename into place: {e}"))?;
+    log::info!(
+        "add_to_steam: wrote {} bytes to {} (appid {})",
+        new_bytes.len(),
+        shortcuts_path.display(),
+        appid
+    );
 
     let artwork_files = install_artwork(&user_dir, target, appid);
+    log::info!(
+        "add_to_steam: dropped {} artwork file(s) into grid/ for appid {}",
+        artwork_files,
+        appid
+    );
     let compat_tool = maybe_set_compat_tool(target, appid);
+    if let Some(t) = &compat_tool {
+        log::info!("add_to_steam: compat tool set to {} for appid {}", t, appid);
+    }
 
     Ok(AddOutcome::Added {
         appid,
@@ -282,6 +324,14 @@ fn maybe_set_compat_tool(target: SteamTarget, appid: u32) -> Option<String> {
 
 /// Pick the newest `GE-Proton*` we can find, falling back to Steam's
 /// always-present `proton_experimental` so even fresh installs work.
+///
+/// Important: a directory under `compatibilitytools.d/` is only a real
+/// Steam compat tool if it has `compatibilitytool.vdf` (that's the
+/// manifest Steam reads to register the tool). Lutris drops Wine
+/// prefixes into the same parent dir (with `drive_c/`, `system.reg`,
+/// etc.) — those look right by name but Steam can't actually use them,
+/// and writing one into CompatToolMapping causes Steam to silently fall
+/// back to `steamlinuxruntime_sniper`. Hence the .vdf check.
 fn pick_proton_tool() -> String {
     let home = match dirs::home_dir() {
         Some(h) => h,
@@ -295,6 +345,9 @@ fn pick_proton_tool() -> String {
     for dir in &candidate_dirs {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd.flatten() {
+                if !entry.path().join("compatibilitytool.vdf").exists() {
+                    continue;
+                }
                 if let Some(name) = entry.file_name().to_str() {
                     if name.starts_with("GE-Proton") {
                         ge.push(name.to_string());
@@ -445,24 +498,32 @@ fn install_artwork(user_dir: &Path, target: SteamTarget, appid: u32) -> u32 {
     //   <appid>.<ext>         → wide library header capsule (920×430)
     //   <appid>p.<ext>        → vertical poster (600×900) — the grid view
     //   <appid>_hero.<ext>    → game-details banner (3840×1240 / 1920×620)
-    //   <appid>_logo.<ext>    → transparent logo overlay (1280×720)
     //   <appid>_icon.<ext>    → square icon (256×256)
+    //
+    // We deliberately omit `_logo` (1280×720): when a non-Steam shortcut
+    // has no logo, Steam draws the game's AppName over the hero, which
+    // matches how most store-bought titles look in the library. Adding a
+    // logo overlay covers the name and feels off-brand.
     let files: &[(&str, &str, &[u8])] = match target {
         SteamTarget::Thelab => &[
             ("", "png", THELAB_HEADER),
             ("p", "png", THELAB_CAPSULE),
             ("_hero", "png", THELAB_HERO),
-            ("_logo", "png", THELAB_LOGO),
             ("_icon", "png", THELAB_ICON),
         ],
         SteamTarget::Wow => &[
             ("", "png", WOW_HEADER),
             ("p", "png", WOW_CAPSULE),
             ("_hero", "jpg", WOW_HERO),
-            ("_logo", "png", WOW_LOGO),
             ("_icon", "jpg", WOW_ICON),
         ],
     };
+
+    // If we wrote a logo on a previous version, sweep it so the AppName
+    // overlay returns. Best-effort; no failure path.
+    for ext in ["png", "jpg"] {
+        let _ = std::fs::remove_file(grid.join(format!("{appid}_logo.{ext}")));
+    }
 
     let mut written = 0u32;
     for (suffix, ext, bytes) in files {
@@ -523,14 +584,23 @@ fn find_steam_user_dir() -> Option<PathBuf> {
 }
 
 fn is_steam_running() -> bool {
-    // pgrep is on every SteamOS install; if it isn't present we can't
-    // be certain Steam is down, so assume it might be and let the user
-    // confirm.
-    std::process::Command::new("pgrep")
-        .args(["-x", "steam"])
-        .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(true)
+    // We want to detect ANY Steam process so we don't write while
+    // Steam has shortcuts.vdf in memory. `steam` is the main binary
+    // (procname/comm: "steam"), `steamwebhelper` is the CEF child that
+    // can outlive the main process during shutdown. pgrep -x matches
+    // /proc/<pid>/comm so we hit them by exact comm name.
+    for name in ["steam", "steamwebhelper"] {
+        let running = std::process::Command::new("pgrep")
+            .args(["-x", name])
+            .output()
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false);
+        if running {
+            log::debug!("is_steam_running: matched comm='{}'", name);
+            return true;
+        }
+    }
+    false
 }
 
 // ── appid ────────────────────────────────────────────────────────────
@@ -602,22 +672,48 @@ fn encode_entry(
     buf
 }
 
-/// Insert the new entry just before the final `\x08` that closes the
-/// root `shortcuts` object — Steam-friendly because we preserve every
-/// byte of existing entries (including types we don't know how to
-/// re-emit).
+/// Steam's empty `shortcuts.vdf` is exactly:
+///   `\x00 shortcuts \x00 \x08 \x08`
+/// — i.e. an open of the `shortcuts` object followed by TWO closing
+/// bytes (one for `shortcuts`, one for the implicit file/root). We
+/// splice new entries between the existing children and that first
+/// close-byte, which means inserting at `len - 2`, then adding `\x08\x08`
+/// back. Earlier this function stripped just ONE trailing byte, leaving
+/// the close-shortcuts in front of the new entry — every shortcut ended
+/// up at the file root, Steam treated `shortcuts` as empty, and the
+/// library stayed blank. (See git blame on this comment for the fix.)
 fn splice_entry(existing: &[u8], entry: &[u8]) -> Result<Vec<u8>, String> {
-    if existing.is_empty() || existing[existing.len() - 1] != 0x08 {
+    let n = existing.len();
+    if n < 2 || existing[n - 1] != 0x08 || existing[n - 2] != 0x08 {
         return Err(
-            "shortcuts.vdf doesn't end with the expected object-close byte (0x08); refusing to write."
+            "shortcuts.vdf doesn't end with the expected \\x08\\x08 terminator; refusing to write."
                 .into(),
         );
     }
-    let mut out = Vec::with_capacity(existing.len() + entry.len());
-    out.extend_from_slice(&existing[..existing.len() - 1]);
+    let mut out = Vec::with_capacity(n + entry.len());
+    out.extend_from_slice(&existing[..n - 2]);
     out.extend_from_slice(entry);
-    out.push(0x08);
+    out.push(0x08); // close shortcuts
+    out.push(0x08); // close root
     Ok(out)
+}
+
+/// A pristine empty shortcuts.vdf, used to recover from broken state
+/// (orphan entries at the root from the splice bug) and as the seed
+/// when no file exists yet.
+const EMPTY_SHORTCUTS: &[u8] = b"\x00shortcuts\x00\x08\x08";
+
+/// True if the file looks like a broken splice-victim: longer than the
+/// empty template AND the very first byte after `shortcuts\0` is the
+/// close-shortcuts `\x08` — meaning every "entry" inside is actually
+/// floating at the file root and Steam won't pick any of them up.
+fn is_malformed_orphaned(data: &[u8]) -> bool {
+    // Byte layout of a sane file: `\x00 s h o r t c u t s \x00 \x00 <entry...`.
+    //                              0    1 2 3 4 5 6 7 8 9 10    11
+    // Position 11 must be `\x00` (open of entry "0") for any non-empty
+    // file. If it's `\x08` and we have content after, the close happened
+    // too early.
+    data.len() > EMPTY_SHORTCUTS.len() && data.get(11) == Some(&0x08)
 }
 
 // ── Light parser: just enough to count entries + collect appids ──────

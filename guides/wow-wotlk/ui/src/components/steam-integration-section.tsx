@@ -50,11 +50,16 @@ export function SteamIntegrationSection() {
     null
   )
   const [busy, setBusy] = React.useState<"thelab" | "wow" | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [lastResult, setLastResult] = React.useState<{
-    target: "thelab" | "wow"
-    outcome: AddOutcome
-  } | null>(null)
+  // Per-target notifications so The Lab's success card stays next to The
+  // Lab's row (instead of bouncing into WoW's spot when WoW is added).
+  const [results, setResults] = React.useState<{
+    thelab?: AddOutcome
+    wow?: AddOutcome
+  }>({})
+  const [errors, setErrors] = React.useState<{
+    thelab?: string
+    wow?: string
+  }>({})
 
   const refresh = React.useCallback(async () => {
     if (!isTauri()) return
@@ -78,13 +83,18 @@ export function SteamIntegrationSection() {
 
   const add = async (target: "thelab" | "wow") => {
     setBusy(target)
-    setError(null)
+    setErrors((prev) => ({ ...prev, [target]: undefined }))
+    setResults((prev) => ({ ...prev, [target]: undefined }))
+    console.log(`[steam-integration] add_to_steam start: target=${target}`)
     try {
       const outcome = await trackedInvoke<AddOutcome>("add_to_steam", { target })
-      setLastResult({ target, outcome })
+      console.log(`[steam-integration] add_to_steam ok:`, outcome)
+      setResults((prev) => ({ ...prev, [target]: outcome }))
       await refresh()
     } catch (e) {
-      setError(typeof e === "string" ? e : String(e))
+      const msg = typeof e === "string" ? e : String(e)
+      console.warn(`[steam-integration] add_to_steam error:`, msg)
+      setErrors((prev) => ({ ...prev, [target]: msg }))
     } finally {
       setBusy(null)
     }
@@ -110,68 +120,133 @@ export function SteamIntegrationSection() {
       )}
 
       <Row
+        target="thelab"
         title="The Lab"
         subtitle="This app, as a non-Steam game so it can run in Gaming Mode."
         present={status.thelab_present}
         appid={status.thelab_appid ?? undefined}
         busy={busy === "thelab"}
         disabled={!canAct || busy !== null}
+        result={results.thelab}
+        error={errors.thelab}
         onAdd={() => void add("thelab")}
       />
       <div className="border-t border-border" />
       <Row
+        target="wow"
         title="World of Warcraft: WotLK"
         subtitle="Your WoW client (the path from the WoW client card)."
         present={status.wow_present}
         appid={status.wow_appid ?? undefined}
         busy={busy === "wow"}
         disabled={!canAct || busy !== null}
+        result={results.wow}
+        error={errors.wow}
         onAdd={() => void add("wow")}
       />
 
-      {lastResult && (
+      <p className="text-[11px] text-muted-foreground">
+        We back up your <span className="font-mono">shortcuts.vdf</span> before
+        every write, and drop bundled artwork into{" "}
+        <span className="font-mono">config/grid/</span> so Gaming Mode shows a
+        proper tile instead of a generic placeholder.
+      </p>
+    </div>
+  )
+}
+
+function Row({
+  target,
+  title,
+  subtitle,
+  present,
+  appid,
+  busy,
+  disabled,
+  result,
+  error,
+  onAdd,
+}: {
+  target: "thelab" | "wow"
+  title: string
+  subtitle: string
+  present: boolean
+  appid: number | undefined
+  busy: boolean
+  disabled: boolean
+  result: AddOutcome | undefined
+  error: string | undefined
+  onAdd: () => void
+}) {
+  const name = target === "thelab" ? "The Lab" : "World of Warcraft: WotLK"
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium leading-tight">{title}</span>
+            {present && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                <CheckCircleIcon weight="fill" className="size-3" />
+                In Steam
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+          {appid != null && (
+            <p className="font-mono text-[10px] text-muted-foreground/70">
+              appid {appid}
+            </p>
+          )}
+        </div>
+        <Button
+          size="sm"
+          variant={present ? "outline" : "default"}
+          onClick={onAdd}
+          disabled={disabled}
+        >
+          {busy ? "Adding…" : present ? "Re-add" : "Add to Steam"}
+        </Button>
+      </div>
+
+      {result && (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-          {lastResult.outcome.status === "added" ? (
+          {result.status === "added" ? (
             <>
-              ✓ Added <span className="font-medium">{labelFor(lastResult.target)}</span>{" "}
-              to Steam (appid{" "}
-              <span className="font-mono">{lastResult.outcome.appid}</span>)
-              {lastResult.outcome.artwork_files > 0 && (
+              ✓ Added <span className="font-medium">{name}</span> to Steam
+              (appid <span className="font-mono">{result.appid}</span>)
+              {result.artwork_files > 0 && (
                 <>
                   {" "}
-                  + {lastResult.outcome.artwork_files} artwork file
-                  {lastResult.outcome.artwork_files === 1 ? "" : "s"}
+                  + {result.artwork_files} artwork file
+                  {result.artwork_files === 1 ? "" : "s"}
                 </>
               )}
-              {lastResult.outcome.compat_tool && (
+              {result.compat_tool && (
                 <>
                   {" "}
                   + Proton compat set to{" "}
-                  <span className="font-mono">
-                    {lastResult.outcome.compat_tool}
-                  </span>
+                  <span className="font-mono">{result.compat_tool}</span>
                 </>
               )}
               . Start Steam again to see it in your library.
             </>
           ) : (
             <>
-              <span className="font-medium">{labelFor(lastResult.target)}</span>{" "}
-              is already in your Steam library (appid{" "}
-              <span className="font-mono">{lastResult.outcome.appid}</span>)
-              {lastResult.outcome.artwork_files > 0 && (
+              <span className="font-medium">{name}</span> is already in your
+              Steam library (appid{" "}
+              <span className="font-mono">{result.appid}</span>)
+              {result.artwork_files > 0 && (
                 <>
                   {" "}
-                  — refreshed {lastResult.outcome.artwork_files} artwork file
-                  {lastResult.outcome.artwork_files === 1 ? "" : "s"}
+                  — refreshed {result.artwork_files} artwork file
+                  {result.artwork_files === 1 ? "" : "s"}
                 </>
               )}
-              {lastResult.outcome.compat_tool && (
+              {result.compat_tool && (
                 <>
                   {", "}re-confirmed Proton compat as{" "}
-                  <span className="font-mono">
-                    {lastResult.outcome.compat_tool}
-                  </span>
+                  <span className="font-mono">{result.compat_tool}</span>
                 </>
               )}
               .
@@ -185,61 +260,6 @@ export function SteamIntegrationSection() {
           {error}
         </div>
       )}
-
-      <p className="text-[11px] text-muted-foreground">
-        We back up your <span className="font-mono">shortcuts.vdf</span> before
-        every write, and drop bundled artwork into{" "}
-        <span className="font-mono">config/grid/</span> so Gaming Mode shows a
-        proper tile instead of a generic placeholder.
-      </p>
-    </div>
-  )
-}
-
-function Row({
-  title,
-  subtitle,
-  present,
-  appid,
-  busy,
-  disabled,
-  onAdd,
-}: {
-  title: string
-  subtitle: string
-  present: boolean
-  appid: number | undefined
-  busy: boolean
-  disabled: boolean
-  onAdd: () => void
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium leading-tight">{title}</span>
-          {present && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-              <CheckCircleIcon weight="fill" className="size-3" />
-              In Steam
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
-        {appid != null && (
-          <p className="font-mono text-[10px] text-muted-foreground/70">
-            appid {appid}
-          </p>
-        )}
-      </div>
-      <Button
-        size="sm"
-        variant={present ? "outline" : "default"}
-        onClick={onAdd}
-        disabled={disabled}
-      >
-        {busy ? "Adding…" : present ? "Re-add" : "Add to Steam"}
-      </Button>
     </div>
   )
 }
@@ -266,6 +286,3 @@ function SteamRunningBanner({ onRefresh }: { onRefresh: () => void }) {
   )
 }
 
-function labelFor(t: "thelab" | "wow"): string {
-  return t === "thelab" ? "The Lab" : "World of Warcraft: WotLK"
-}

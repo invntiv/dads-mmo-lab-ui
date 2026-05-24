@@ -695,10 +695,15 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
   // transitions to "running" so newly-started servers pick up.
   React.useEffect(() => {
     if (!isTauri()) return
-    if (worldserverStatus !== "running") return
+    // Fire on EVERY worldserverStatus value (incl. the initial "checking"
+    // tick on mount). The DB container is usually up before the
+    // worldserver finishes initializing, so this lands characters early;
+    // if it isn't ready yet the call quietly errors out and the next
+    // status flip re-runs us. Previously gated on === "running", which
+    // left the sidebar character picker empty until the first user
+    // interaction triggered a re-render.
     refreshCharacters().catch(() => {
-      // Surface in console only — the worldserver might be transitioning;
-      // a future status flip will re-trigger this effect.
+      // Quiet — worldserver might be mid-transition.
     })
   }, [worldserverStatus, refreshCharacters])
 

@@ -30,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import { ScrollProgress } from "@/components/ui/scroll-progress"
 import {
   Select,
   SelectContent,
@@ -148,6 +149,11 @@ export function InventoryScreen() {
 
   const [sendingFor, setSendingFor] = React.useState<ItemSummary | null>(null)
 
+  // Drives the gradient bar between the filter row and the results
+  // list. Same pattern as the Settings page — the bar tracks scroll
+  // progress of the dynamically sized results container below.
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+
   // Page-level preference: include DEPRECATED items (Blizzard's marker
   // for items that are no longer obtainable). Persists in settings.json
   // via app_settings::inventory_show_deprecated. `null` while loading
@@ -252,7 +258,7 @@ export function InventoryScreen() {
   }
 
   return (
-    <div className="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4 p-6">
+    <div className="grid h-full grid-rows-[auto_auto_minmax(0,1fr)] gap-4 p-6">
       <header className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
@@ -309,7 +315,15 @@ export function InventoryScreen() {
         </div>
       </header>
 
-      <div className="min-h-0 space-y-3 overflow-y-auto pr-1 pb-3">
+      <ScrollProgress
+        containerRef={scrollRef}
+        className="relative h-[3px] w-full rounded-full"
+      />
+
+      <div
+        ref={scrollRef}
+        className="min-h-0 space-y-3 overflow-y-auto pr-1 pb-3"
+      >
         <EnrichInfoWell
           iconStatus={iconStatus}
           dismissed={enrichDismissed}

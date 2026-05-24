@@ -52,17 +52,14 @@ fn external_navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK 2.40+ defaults to a DMABUF-based renderer that can't
-    // create an EGL display ("Could not create default EGL display:
-    // EGL_BAD_PARAMETER. Aborting...") in some environments — notably
-    // Steam Gaming Mode (gamescope) and Lutris's bundled runtime — even
-    // though it renders fine from a normal desktop session. Disabling
-    // that renderer falls back to a GL path that works in all of them.
-    // Set before the WebView/web process starts; honor a user override.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    // We used to force `WEBKIT_DISABLE_DMABUF_RENDERER=1` to dodge an
+    // "EGL_BAD_PARAMETER" crash we hit under gamescope, but that turned
+    // out to be a library-mismatch from an Arch-built AppImage running
+    // against SteamOS's webkit2gtk — not a gamescope problem. With the
+    // native Deck build the DMABUF renderer initializes cleanly in
+    // both desktop and Gaming Mode, so we let WebKitGTK pick its own
+    // path. If it ever breaks again, the user can still set
+    // `WEBKIT_DISABLE_DMABUF_RENDERER=1` manually as an escape hatch.
 
     tauri::Builder::default()
         .plugin(

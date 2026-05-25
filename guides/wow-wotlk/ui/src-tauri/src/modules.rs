@@ -59,6 +59,13 @@ pub struct Character {
     pub level: u32,
     pub race: u32,
     pub class: u32,
+    /// Last-saved continent (0 EK, 1 Kalimdor, 530 Outland, 571 Northrend, ...).
+    /// Updated by the worldserver on logout/periodic save; can be up to ~15min
+    /// stale while the character is logged in.
+    pub map: u32,
+    /// Last-saved zone id (resolves to a name via AreaTable.dbc — surfaced
+    /// raw for now). Same staleness caveat as `map`.
+    pub zone: u32,
 }
 
 /// Find the first install dir under $HOME starting with `wow-server` that
@@ -217,7 +224,7 @@ pub fn list_characters() -> Result<Vec<Character>, String> {
             "-N",
             "-B",
             "-e",
-            "SELECT c.guid, c.name, c.account, c.level, c.race, c.class \
+            "SELECT c.guid, c.name, c.account, c.level, c.race, c.class, c.map, c.zone \
              FROM acore_characters.characters c \
              JOIN acore_auth.account a ON a.id = c.account \
              WHERE a.username NOT LIKE 'RNDBOT%' \
@@ -237,18 +244,29 @@ pub fn list_characters() -> Result<Vec<Character>, String> {
     let mut chars = Vec::new();
     for line in stdout.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 6 {
+        if parts.len() < 8 {
             continue;
         }
         let parse_u64 = |s: &str| s.trim().parse::<u64>().ok();
         let parse_u32 = |s: &str| s.trim().parse::<u32>().ok();
-        let (Some(guid), Some(account), Some(level), Some(race), Some(class)) = (
+        let (
+            Some(guid),
+            Some(account),
+            Some(level),
+            Some(race),
+            Some(class),
+            Some(map),
+            Some(zone),
+        ) = (
             parse_u64(parts[0]),
             parse_u64(parts[2]),
             parse_u32(parts[3]),
             parse_u32(parts[4]),
             parse_u32(parts[5]),
-        ) else {
+            parse_u32(parts[6]),
+            parse_u32(parts[7]),
+        )
+        else {
             continue;
         };
         chars.push(Character {
@@ -258,6 +276,8 @@ pub fn list_characters() -> Result<Vec<Character>, String> {
             level,
             race,
             class,
+            map,
+            zone,
         });
     }
     Ok(chars)

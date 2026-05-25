@@ -35,6 +35,22 @@ export const CLASS_NAMES: Record<number, string> = {
   11: "Druid",
 }
 
+/** Short labels for tight surfaces (bot card line 2, etc.). Mostly
+ *  the same as CLASS_NAMES — Death Knight is the long one and gets
+ *  shortened to "DK". */
+export const CLASS_SHORT_NAMES: Record<number, string> = {
+  1: "Warrior",
+  2: "Paladin",
+  3: "Hunter",
+  4: "Rogue",
+  5: "Priest",
+  6: "DK",
+  7: "Shaman",
+  8: "Mage",
+  9: "Warlock",
+  11: "Druid",
+}
+
 /** Wowhead/zamimg CDN icon basename for each class. Rendered exactly
  * like item icons — `https://wow.zamimg.com/images/wow/icons/<size>/<name>.jpg`
  * — so the character avatar in the switcher + menu card shows the

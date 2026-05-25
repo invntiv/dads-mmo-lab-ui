@@ -29,6 +29,8 @@ use wow_dbc::wrath_tables::item_display_info::ItemDisplayInfo;
 use wow_dbc::wrath_tables::item_set::ItemSet;
 use wow_dbc::wrath_tables::spell::Spell;
 use wow_dbc::wrath_tables::spell_icon::SpellIcon;
+use wow_dbc::wrath_tables::talent::Talent;
+use wow_dbc::wrath_tables::talent_tab::TalentTab;
 use wow_mpq::PatchChain;
 
 use crate::app_settings;
@@ -69,6 +71,8 @@ const ITEM_DISPLAY_INFO_PATH: &str = "DBFilesClient\\ItemDisplayInfo.dbc";
 const SPELL_PATH: &str = "DBFilesClient\\Spell.dbc";
 const SPELL_ICON_PATH: &str = "DBFilesClient\\SpellIcon.dbc";
 const ITEM_SET_PATH: &str = "DBFilesClient\\ItemSet.dbc";
+const TALENT_PATH: &str = "DBFilesClient\\Talent.dbc";
+const TALENT_TAB_PATH: &str = "DBFilesClient\\TalentTab.dbc";
 
 /// Open the standard 3.3.5a patch-chain. Skips MPQs that aren't
 /// present (some clients ship without certain patches). Returns an
@@ -718,4 +722,286 @@ pub fn wipe_icon_cache() -> Result<(), String> {
 #[tauri::command]
 pub fn wipe_tooltip_cache() -> Result<(), String> {
     wipe_cache_at(tooltip_cache_path())
+}
+
+// ── Talent.dbc + TalentTab.dbc extraction ────────────────────────────
+//
+// Why this exists separately from the tooltip/icon extractors: the
+// playerbots "My Party" flow needs to (a) identify which talent a given
+// `character_talent.spell` row represents — so we can infer a bot's
+// spec — and (b) apply custom talent builds via direct DB INSERT.
+//
+// Both directions need the same metadata: which tree (0/1/2 within the
+// class) a spell belongs to, the talent's tier+column coords, and its
+// rank index (a single talent has up to ~5 spell_rank entries, each a
+// different spell id).
+//
+// The cache is small (~2400 entries × ~100 bytes ≈ 250KB). Both the
+// harvest tool (Phase 2b) and the apply path (Phase 2e) load it.
+
+const TALENT_CACHE_VERSION: u32 = 1;
+
+/// One talent rank's metadata, keyed by spell_id in the cache. Capturing
+/// rank is critical because each `Talent` row owns up to 9 spell ids
+/// (one per rank) and `character_talent.spell` stores the FINAL ranked
+/// spell — so e.g. a "Improved Heal r3" row will show one of the r3
+/// spell ids, and we need to know it's r3 to compute total points.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TalentInfo {
+    /// Talent.dbc primary key — included for cross-referencing.
+    pub talent_id: i32,
+    /// TalentTab.dbc primary key — included for cross-referencing.
+    pub tab_id: i32,
+    /// Which tree (0=first, 1=second, 2=third) within the class. The
+    /// "Holy/Prot/Ret" axis for Paladin, etc. Derived from
+    /// `TalentTab.order_index`.
+    pub tab_index: u8,
+    /// Class id (1..=11). Derived from `TalentTab.class_mask` —
+    /// trailing_zeros + 1.
+    pub class_id: u8,
+    /// Tier (0-indexed row in the tree).
+    pub tier: u8,
+    /// Column (0-indexed within the row).
+    pub column: u8,
+    /// Rank (0-indexed: r1 = 0). Counts how many points are spent.
+    pub rank: u8,
+    /// TalentTab display name (e.g. "Holy", "Protection"). enUS-only.
+    pub tab_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TalentDataCache {
+    pub version: u32,
+    pub extracted_at: String,
+    pub source_dir: String,
+    pub talent_count: u32,
+    pub tab_count: u32,
+    /// spell_id → TalentInfo. Keyed as String so the JSON cache is
+    /// language-portable and BTreeMap-friendly (same shape as the icon
+    /// cache's displayid map).
+    pub spell_to_talent: BTreeMap<String, TalentInfo>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TalentCacheStatus {
+    NoClient,
+    NotExtracted {
+        client_dir: String,
+    },
+    Ready {
+        talent_count: u32,
+        tab_count: u32,
+        extracted_at: String,
+        source_dir: String,
+        stale: bool,
+    },
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct TalentExtractResult {
+    pub talent_count: u32,
+    pub tab_count: u32,
+    pub extracted_at: String,
+}
+
+fn talent_cache_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|p| p.join("dads-mmo-lab").join("talent-data.json"))
+}
+
+fn load_talent_cache_file() -> Option<TalentDataCache> {
+    let path = talent_cache_path()?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn save_talent_cache_file(cache: &TalentDataCache) -> Result<(), String> {
+    let path = talent_cache_path()
+        .ok_or_else(|| "Could not resolve config directory".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+    }
+    let json = serde_json::to_string(cache)
+        .map_err(|e| format!("serialize talent cache: {e}"))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("write {}: {}", path.display(), e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_talent_cache_status() -> TalentCacheStatus {
+    let settings = app_settings::load();
+    let client_dir = match settings.wow_client_dir {
+        Some(d) => d,
+        None => return TalentCacheStatus::NoClient,
+    };
+    match load_talent_cache_file() {
+        None => TalentCacheStatus::NotExtracted { client_dir },
+        Some(c) if c.version != TALENT_CACHE_VERSION => {
+            TalentCacheStatus::NotExtracted { client_dir }
+        }
+        Some(c) => TalentCacheStatus::Ready {
+            talent_count: c.talent_count,
+            tab_count: c.tab_count,
+            extracted_at: c.extracted_at,
+            stale: c.source_dir != client_dir,
+            source_dir: c.source_dir,
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn extract_talent_data(
+    window: tauri::Window,
+) -> Result<TalentExtractResult, String> {
+    let settings = app_settings::load();
+    let client_dir = settings
+        .wow_client_dir
+        .ok_or_else(|| "No WoW client connected — set one on the dashboard first.".to_string())?;
+
+    tokio::task::spawn_blocking(move || extract_talent_data_blocking(window, client_dir))
+        .await
+        .map_err(|e| format!("blocking task join: {e}"))?
+}
+
+fn extract_talent_data_blocking(
+    window: tauri::Window,
+    client_dir: String,
+) -> Result<TalentExtractResult, String> {
+    let (spell_to_talent, tab_count) =
+        extract_talent_metadata(&window, Path::new(&client_dir))?;
+    let talent_count = spell_to_talent.len() as u32;
+    let extracted_at = now_iso();
+
+    emit_progress(
+        &window,
+        "talents",
+        "Writing cache…",
+        Some(format!(
+            "{} talent ranks · {} tabs",
+            talent_count, tab_count
+        )),
+    );
+    let cache = TalentDataCache {
+        version: TALENT_CACHE_VERSION,
+        extracted_at: extracted_at.clone(),
+        source_dir: client_dir,
+        talent_count,
+        tab_count,
+        spell_to_talent,
+    };
+    save_talent_cache_file(&cache)?;
+    emit_progress(&window, "talents", "Done.", None);
+    Ok(TalentExtractResult {
+        talent_count,
+        tab_count,
+        extracted_at,
+    })
+}
+
+#[tauri::command]
+pub fn load_talent_data() -> Result<TalentDataCache, String> {
+    load_talent_cache_file()
+        .ok_or_else(|| "No talent cache present yet — run extract first.".to_string())
+}
+
+#[tauri::command]
+pub fn wipe_talent_cache() -> Result<(), String> {
+    wipe_cache_at(talent_cache_path())
+}
+
+/// Worker — opens the patch chain, walks both DBCs, builds the spell→
+/// talent reverse map keyed for cache storage.
+fn extract_talent_metadata(
+    window: &tauri::Window,
+    wow_dir: &Path,
+) -> Result<(BTreeMap<String, TalentInfo>, u32), String> {
+    let mut chain = open_patch_chain(wow_dir, Some((window, "talents")))?;
+
+    // 1. TalentTab.dbc — build tab_id → (class_id, tab_index, name).
+    //    class_id is computed from class_mask via trailing_zeros + 1,
+    //    which gives the canonical AC class id (1=Warrior … 11=Druid,
+    //    skipping 10 per the WotLK class table).
+    emit_progress(window, "talents", "Reading TalentTab.dbc…", None);
+    let tab_bytes = chain
+        .read_file(TALENT_TAB_PATH)
+        .map_err(|e| format!("read {TALENT_TAB_PATH}: {e}"))?;
+    let tabs = TalentTab::read(&mut Cursor::new(tab_bytes))
+        .map_err(|e| format!("parse TalentTab.dbc: {e:?}"))?;
+
+    #[derive(Clone)]
+    struct TabMeta {
+        class_id: u8,
+        tab_index: u8,
+        name: String,
+    }
+    let mut tab_meta: BTreeMap<i32, TabMeta> = BTreeMap::new();
+    for row in &tabs.rows {
+        // class_mask is a bitfield with exactly one bit set per
+        // class-specific tab. Generic tabs (mask=0) get skipped — none
+        // are reachable from `character_talent.spell` anyway.
+        if row.class_mask == 0 {
+            continue;
+        }
+        let class_id = (row.class_mask as u32).trailing_zeros() as u8 + 1;
+        // Use the shared `loc` helper — 3.3.5a writes English to en_gb
+        // with en_us occasionally populated as a fallback. Bail to the
+        // tab id stringified if every locale row is blank.
+        let raw = loc(&row.name_lang);
+        let name = if raw.is_empty() {
+            format!("Tab #{}", row.id.id)
+        } else {
+            raw
+        };
+        tab_meta.insert(
+            row.id.id,
+            TabMeta {
+                class_id,
+                tab_index: row.order_index as u8,
+                name,
+            },
+        );
+    }
+    let tab_count = tab_meta.len() as u32;
+
+    // 2. Talent.dbc — for every (talent, rank) emit a spell→TalentInfo
+    //    entry. Rank 0 (==spell_rank[0]) is the first point spent;
+    //    character_talent.spell stores the spell id of the LATEST rank
+    //    learned, so we need every rank populated to correctly classify
+    //    rows.
+    emit_progress(window, "talents", "Reading Talent.dbc…", None);
+    let talent_bytes = chain
+        .read_file(TALENT_PATH)
+        .map_err(|e| format!("read {TALENT_PATH}: {e}"))?;
+    let talents = Talent::read(&mut Cursor::new(talent_bytes))
+        .map_err(|e| format!("parse Talent.dbc: {e:?}"))?;
+
+    emit_progress(window, "talents", "Indexing talent ranks…", None);
+    let mut spell_to_talent: BTreeMap<String, TalentInfo> = BTreeMap::new();
+    for talent in &talents.rows {
+        let Some(meta) = tab_meta.get(&talent.tab_id) else {
+            continue; // class-less tab — skip
+        };
+        for (rank_idx, &spell_id) in talent.spell_rank.iter().enumerate() {
+            if spell_id == 0 {
+                continue;
+            }
+            spell_to_talent.insert(
+                spell_id.to_string(),
+                TalentInfo {
+                    talent_id: talent.id.id,
+                    tab_id: talent.tab_id,
+                    tab_index: meta.tab_index,
+                    class_id: meta.class_id,
+                    tier: talent.tier_id as u8,
+                    column: talent.column_index as u8,
+                    rank: rank_idx as u8,
+                    tab_name: meta.name.clone(),
+                },
+            );
+        }
+    }
+
+    Ok((spell_to_talent, tab_count))
 }

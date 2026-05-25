@@ -32,7 +32,7 @@ import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
 type ExtractProgress = {
-  kind: "icons" | "tooltips"
+  kind: "icons" | "tooltips" | "talents"
   phase: string
   detail: string | null
 }
@@ -85,6 +85,18 @@ type TooltipCacheStatus =
       stale: boolean
     }
 
+type TalentCacheStatus =
+  | { status: "no_client" }
+  | { status: "not_extracted"; client_dir: string }
+  | {
+      status: "ready"
+      talent_count: number
+      tab_count: number
+      extracted_at: string
+      source_dir: string
+      stale: boolean
+    }
+
 export function SettingsScreen() {
   // After any successful extract/wipe we call this so the in-memory
   // caches that the rest of the app reads from (Inventory grid,
@@ -100,6 +112,8 @@ export function SettingsScreen() {
   )
   const [tooltipStatus, setTooltipStatus] =
     React.useState<TooltipCacheStatus | null>(null)
+  const [talentStatus, setTalentStatus] =
+    React.useState<TalentCacheStatus | null>(null)
   const [clientState, setClientState] = React.useState<WowClientState | null>(
     null
   )
@@ -108,22 +122,27 @@ export function SettingsScreen() {
   // Latest phase-progress event per extractor kind, surfaced next to
   // the busy spinner. Cleared when the extract completes.
   const [progress, setProgress] = React.useState<
-    Partial<Record<"icons" | "tooltips", { phase: string; detail: string | null }>>
+    Partial<
+      Record<"icons" | "tooltips" | "talents", { phase: string; detail: string | null }>
+    >
   >({})
 
   const refreshStatuses = React.useCallback(async () => {
     if (!isTauri()) return
     // Run in parallel — all three calls hit local files and are
     // independent. No need to await sequentially.
-    const [iconRes, tooltipRes, clientRes] = await Promise.allSettled([
+    const [iconRes, tooltipRes, talentRes, clientRes] = await Promise.allSettled([
       trackedInvoke<IconCacheStatus>("get_icon_cache_status"),
       trackedInvoke<TooltipCacheStatus>("get_tooltip_cache_status"),
+      trackedInvoke<TalentCacheStatus>("get_talent_cache_status"),
       trackedInvoke<WowClientState>("get_wow_client_state"),
     ])
     if (iconRes.status === "fulfilled") setIconStatus(iconRes.value)
     else console.warn("get_icon_cache_status failed", iconRes.reason)
     if (tooltipRes.status === "fulfilled") setTooltipStatus(tooltipRes.value)
     else console.warn("get_tooltip_cache_status failed", tooltipRes.reason)
+    if (talentRes.status === "fulfilled") setTalentStatus(talentRes.value)
+    else console.warn("get_talent_cache_status failed", talentRes.reason)
     if (clientRes.status === "fulfilled") setClientState(clientRes.value)
     else console.warn("get_wow_client_state failed", clientRes.reason)
   }, [])
@@ -158,7 +177,7 @@ export function SettingsScreen() {
   const noClient =
     iconStatus?.status === "no_client" || tooltipStatus?.status === "no_client"
 
-  const clearProgress = (kind: "icons" | "tooltips") => {
+  const clearProgress = (kind: "icons" | "tooltips" | "talents") => {
     setProgress((prev) => {
       const { [kind]: _drop, ...rest } = prev
       return rest
@@ -195,6 +214,21 @@ export function SettingsScreen() {
     }
   }
 
+  const runTalentImport = async () => {
+    setBusy("talents")
+    setError(null)
+    clearProgress("talents")
+    try {
+      await trackedInvoke("extract_talent_data")
+      await refreshStatuses()
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e))
+    } finally {
+      setBusy(null)
+      clearProgress("talents")
+    }
+  }
+
   const runImportAll = async () => {
     setBusy("all")
     setError(null)
@@ -216,7 +250,9 @@ export function SettingsScreen() {
     }
   }
 
-  const wipe = async (command: "wipe_icon_cache" | "wipe_tooltip_cache") => {
+  const wipe = async (
+    command: "wipe_icon_cache" | "wipe_tooltip_cache" | "wipe_talent_cache"
+  ) => {
     setError(null)
     try {
       await trackedInvoke(command)
@@ -352,14 +388,22 @@ export function SettingsScreen() {
             />
             <EnrichmentCard
               icon={<SparkleIcon className="size-5" />}
-              title="Spells"
-              speed="Medium"
-              description="Spell names, ranks, icons, and descriptions from Spell.dbc. Foundation for a future Spellbook page and richer Equip-line tooltips."
-              status="Not yet implemented"
-              busy={false}
-              disabled
-              actionLabel="Extract spells"
-              onAction={() => {}}
+              title="Talents"
+              speed="Fast"
+              description="Talent metadata from Talent.dbc + TalentTab.dbc. Lets the Player Bots browser show specs (Holy/Prot/Ret etc.) and powers the My Party flow's spec-pick wizard. ~2400 entries, finishes in seconds."
+              status={talentStatusLine(talentStatus)}
+              busy={busy === "talents" || busy === "all"}
+              progress={progress.talents}
+              disabled={noClient || busy !== null}
+              actionLabel={
+                talentStatus?.status === "ready" ? "Re-extract" : "Extract talents"
+              }
+              onAction={runTalentImport}
+              onWipe={
+                talentStatus?.status === "ready"
+                  ? () => wipe("wipe_talent_cache")
+                  : undefined
+              }
             />
             <EnrichmentCard
               icon={<MagicWandIcon className="size-5" />}
@@ -580,8 +624,11 @@ function EnrichmentCard({
           <ArrowClockwiseIcon className="size-3.5 animate-spin" />
           <div className="flex-1 truncate">
             <span className="font-medium">{progress.phase}</span>
-            {progress.detail && (
-              <span className="text-primary/70"> · {progress.detail}</span>
+            {splitProgressCounter(progress.detail).remainder && (
+              <span className="text-primary/70">
+                {" · "}
+                {splitProgressCounter(progress.detail).remainder}
+              </span>
             )}
           </div>
         </div>
@@ -611,7 +658,13 @@ function EnrichmentCard({
             {busy ? (
               <>
                 <ArrowClockwiseIcon className="size-3.5 animate-spin" />
-                Extracting…
+                {/* Pull any (n/N) counter out of the progress detail and
+                    park it in the button label — long MPQ filenames in
+                    the progress strip otherwise push the counter past
+                    the truncate edge where the user can't see it. */}
+                Extracting{progress && splitProgressCounter(progress.detail).counter
+                  ? ` ${splitProgressCounter(progress.detail).counter}`
+                  : ""}…
               </>
             ) : (
               <>
@@ -757,6 +810,26 @@ function ClientCard({
   )
 }
 
+/**
+ * Pull a trailing `(n/N)` counter out of a progress detail string so
+ * the EnrichmentCard can park it in the button text and keep just the
+ * filename + phase in the progress strip — long MPQ names like
+ * `lichking-locale-enUS.MPQ (12/14)` otherwise overrun the truncate
+ * edge and hide the counter.
+ */
+function splitProgressCounter(
+  detail: string | null
+): { counter: string | null; remainder: string | null } {
+  if (!detail) return { counter: null, remainder: null }
+  const m = detail.match(/\s*\((\d+)\/(\d+)\)\s*$/)
+  if (!m) return { counter: null, remainder: detail }
+  const remainder = detail.slice(0, m.index).trim()
+  return {
+    counter: `(${m[1]}/${m[2]})`,
+    remainder: remainder.length > 0 ? remainder : null,
+  }
+}
+
 function iconStatusLine(status: IconCacheStatus | null): string {
   if (!status) return "Loading status…"
   if (status.status === "no_client") return "Connect a WoW client first"
@@ -771,6 +844,15 @@ function tooltipStatusLine(status: TooltipCacheStatus | null): string {
   if (status.status === "no_client") return "Connect a WoW client first"
   if (status.status === "not_extracted") return "Not extracted yet"
   return `${status.spell_count.toLocaleString()} spells · ${status.set_count.toLocaleString()} item sets${
+    status.stale ? " · cache is from a different client" : ""
+  }`
+}
+
+function talentStatusLine(status: TalentCacheStatus | null): string {
+  if (!status) return "Loading status…"
+  if (status.status === "no_client") return "Connect a WoW client first"
+  if (status.status === "not_extracted") return "Not extracted yet"
+  return `${status.talent_count.toLocaleString()} talent ranks · ${status.tab_count} tabs${
     status.stale ? " · cache is from a different client" : ""
   }`
 }

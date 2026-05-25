@@ -199,6 +199,10 @@ export type GameCharacter = {
   level: number
   race: number
   class: number
+  /** Last-saved continent map id. Up to ~15min stale while logged in. */
+  map: number
+  /** Last-saved zone id. Same staleness caveat as `map`. */
+  zone: number
 }
 
 // ── Enrichment caches (icon map + tooltip data) ────────────────────

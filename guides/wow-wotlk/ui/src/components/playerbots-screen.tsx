@@ -29,6 +29,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { ScrollFade, useCanScrollDown } from "@/components/ui/scroll-fade"
 import { ScrollProgress } from "@/components/ui/scroll-progress"
 import {
   Select,
@@ -158,7 +159,7 @@ export function PlayerbotsScreen() {
   const [loading, setLoading] = React.useState(false)
   const [loadError, setLoadError] = React.useState<string | null>(null)
 
-  const [activeTab, setActiveTab] = React.useState<TabId>("party")
+  const [activeTab, setActiveTab] = React.useState<TabId>("world")
   const [search, setSearch] = React.useState("")
   const [roleFilter, setRoleFilter] = React.useState<"any" | Role>("any")
   const [classFilter, setClassFilter] = React.useState("0")
@@ -190,6 +191,7 @@ export function PlayerbotsScreen() {
   } | null>(null)
 
   const scrollRef = React.useRef<HTMLDivElement>(null)
+  const canScrollDown = useCanScrollDown(scrollRef)
 
   const refresh = React.useCallback(async () => {
     if (!isTauri()) return
@@ -294,7 +296,11 @@ export function PlayerbotsScreen() {
   }
 
   return (
-    <div className="grid h-full grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-3 p-6">
+    // Flex-col instead of a fixed-row grid: the toast row used to
+    // reserve gap space even when empty, leaving a bigger gap below
+    // the card list than above the page edges. Flex naturally
+    // collapses null children.
+    <div className="flex h-full flex-col gap-3 p-6">
       <header className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
@@ -325,71 +331,69 @@ export function PlayerbotsScreen() {
         <p className="text-xs text-muted-foreground">{tabMeta.description}</p>
 
         {activeTab !== "settings" && (
-          <>
-            {/* Search + all four filters on a single row at md+:
-                search takes 1/5 (≈20%), each dropdown takes 1/5. On
-                narrow widths it collapses to a 2-col grid so nothing
-                gets uncomfortably squished. */}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search bot name…"
-                  className="pl-9"
-                />
-              </div>
-              <Select
-                value={roleFilter}
-                onValueChange={(v) => setRoleFilter(v as "any" | Role)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ROLE_OPTIONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={classFilter} onValueChange={setClassFilter}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CLASS_FILTER_OPTIONS.map((c) => (
-                    <SelectItem key={c.value} value={c.value}>
-                      {c.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <SpecSelect
-                classFilter={classFilter}
-                value={specFilter}
-                onValueChange={setSpecFilter}
+          // Flex row, left-aligned. Search has a fixed sensible width,
+          // dropdowns hug their content, the In Your Zone checkbox
+          // sits at the right end (only on the world tab). Extra space
+          // at the end is intentional — the user wants left-alignment
+          // over edge-to-edge spread.
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-56">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search bot name…"
+                className="pl-9"
               />
-              <Select value={levelFilter} onValueChange={setLevelFilter}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LEVEL_OPTIONS.map((l) => (
-                    <SelectItem key={l.value} value={l.value}>
-                      {l.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
-
+            <Select
+              value={roleFilter}
+              onValueChange={(v) => setRoleFilter(v as "any" | Role)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ROLE_OPTIONS.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={classFilter} onValueChange={setClassFilter}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CLASS_FILTER_OPTIONS.map((c) => (
+                  <SelectItem key={c.value} value={c.value}>
+                    {c.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <SpecSelect
+              classFilter={classFilter}
+              value={specFilter}
+              onValueChange={setSpecFilter}
+            />
+            <Select value={levelFilter} onValueChange={setLevelFilter}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LEVEL_OPTIONS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>
+                    {l.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {activeTab === "world" && (
               <label
                 className={cn(
-                  "flex w-fit cursor-pointer items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs",
+                  "flex cursor-pointer items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs",
                   !selectedCharacter && "cursor-not-allowed opacity-60"
                 )}
                 title={
@@ -414,7 +418,7 @@ export function PlayerbotsScreen() {
                 </span>
               </label>
             )}
-          </>
+          </div>
         )}
       </header>
 
@@ -426,13 +430,18 @@ export function PlayerbotsScreen() {
       )}
 
       {activeTab === "settings" ? (
-        <div className="row-span-2 min-h-0 overflow-y-auto pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           <SettingsTabPlaceholder />
         </div>
       ) : (
+        // Relative wrapper hosts the ScrollFade overlay so it sits at
+        // the bottom edge of the scroll viewport regardless of how
+        // many cards fit. The scroll container itself takes h-full of
+        // this wrapper.
+        <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
-          className="min-h-0 overflow-y-auto pr-1 pb-3"
+          className="h-full overflow-y-auto pr-1 pb-3"
           onScroll={onListScroll}
         >
           {loadError ? (
@@ -498,6 +507,8 @@ export function PlayerbotsScreen() {
               </div>
             </>
           )}
+        </div>
+        <ScrollFade visible={canScrollDown} />
         </div>
       )}
 

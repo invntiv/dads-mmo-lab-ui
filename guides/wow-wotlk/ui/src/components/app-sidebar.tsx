@@ -19,7 +19,6 @@ import {
   GavelIcon,
   HouseIcon,
   PackageIcon,
-  PuzzlePieceIcon,
   RobotIcon,
   SwordIcon,
   UsersThreeIcon,
@@ -31,19 +30,13 @@ import { WowIcon } from "@/components/wow-icon"
  * collapsible groups (Inventory, Bots) are `group`s with sub-items.
  * Disabled entries render greyed so users see what's coming.
  */
-function buildNavNodes(ahbotNeedsConfig: boolean): NavNode[] {
+function buildNavNodes(_ahbotNeedsConfig: boolean): NavNode[] {
+  // Modules used to be a standalone nav item; it now lives as a
+  // section inside Settings. The AH Bot needs-config notify that
+  // used to pulse on this item is intentionally dropped — the
+  // settings page surfaces the same alert inline.
   return [
     { kind: "item", title: "Dashboard", icon: <HouseIcon />, page: "dashboard" },
-    {
-      kind: "item",
-      title: "Modules",
-      icon: <PuzzlePieceIcon />,
-      page: "modules",
-      notify: ahbotNeedsConfig,
-      tooltip: ahbotNeedsConfig
-        ? "Modules (Auction House Bot needs setup!)"
-        : "Modules",
-    },
     { kind: "item", title: "Teleport", icon: <CompassIcon />, page: "teleport" },
     {
       kind: "group",

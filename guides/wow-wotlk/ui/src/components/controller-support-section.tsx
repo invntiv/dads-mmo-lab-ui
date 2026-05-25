@@ -54,7 +54,8 @@ export function ControllerSupportSection() {
   return (
     <section className="space-y-3">
       <div className="space-y-1">
-        <h2 className="text-base font-semibold leading-tight">
+        <h2 className="flex items-center gap-2 text-base font-semibold leading-tight">
+          <GameControllerIcon className="size-5 text-muted-foreground" />
           Controller Support
         </h2>
         <p className="text-xs text-muted-foreground">

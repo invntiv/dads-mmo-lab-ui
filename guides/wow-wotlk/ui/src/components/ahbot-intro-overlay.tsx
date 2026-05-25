@@ -52,7 +52,10 @@ export function AhBotIntroOverlay() {
   }
 
   const goToModules = () => {
-    setActivePage("modules")
+    // Modules is now a section inside Settings (no standalone nav
+    // item). Landing the user on Settings puts the AH Bot needs-config
+    // alert + accordion right where they expect it.
+    setActivePage("settings")
     dismiss()
   }
 

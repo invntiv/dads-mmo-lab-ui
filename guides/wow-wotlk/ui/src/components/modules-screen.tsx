@@ -37,23 +37,17 @@ import { cn } from "@/lib/utils"
  * - Editing arbitrary conf knobs in place (requires per-knob forms +
  *   restart on save).
  */
-export function ModulesScreen() {
-  const {
-    installedModules,
-    refreshInstalledModules,
-    ahbotNeedsConfig,
-  } = useServerState()
+/**
+ * Embedded modules content — the accordion + AH Bot needs-config
+ * alert + wizard, *without* the page-level header/refresh chrome.
+ * Used as a section inside the Settings page. The standalone
+ * ModulesScreen wraps this with the page chrome for backwards
+ * compatibility (we no longer route to it directly, but the
+ * component is kept so external callers don't break).
+ */
+export function ModulesEmbedded() {
+  const { installedModules, ahbotNeedsConfig } = useServerState()
   const [wizardOpen, setWizardOpen] = React.useState(false)
-  const [refreshing, setRefreshing] = React.useState(false)
-
-  const doRefresh = async () => {
-    setRefreshing(true)
-    try {
-      await refreshInstalledModules()
-    } finally {
-      setRefreshing(false)
-    }
-  }
 
   // Sort: AH Bot first if it needs config, then by display name. Keeps
   // the user's eye on the call-to-action.
@@ -66,6 +60,70 @@ export function ModulesScreen() {
     })
     return copy
   }, [installedModules, ahbotNeedsConfig])
+
+  return (
+    <>
+      {ahbotNeedsConfig && (
+        <Alert className="mb-4 border-amber-500/40 bg-amber-500/10 text-amber-700 [&_svg]:text-amber-600 dark:text-amber-400 dark:[&_svg]:text-amber-400">
+          <WarningCircleIcon />
+          <AlertTitle className="font-semibold">
+            Auction House Bot needs a character
+          </AlertTitle>
+          <AlertDescription className="text-amber-700/90 dark:text-amber-300/90">
+            The AH Bot module is installed but inactive. Open the wizard
+            below to pick the character it should use as the seller.
+            <div className="mt-2">
+              <Button
+                size="sm"
+                onClick={() => setWizardOpen(true)}
+                className="bg-amber-600 text-white hover:bg-amber-600/90"
+              >
+                <UserIcon className="size-4" />
+                Configure character
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {sorted.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <Accordion
+          type="multiple"
+          // Default open: AH Bot (if it needs config) so the user
+          // immediately sees the call-to-action context.
+          defaultValue={ahbotNeedsConfig ? ["mod-ah-bot"] : []}
+          className="space-y-2"
+        >
+          {sorted.map((m) => (
+            <ModuleSection
+              key={m.key}
+              module={m}
+              ahbotNeedsConfig={ahbotNeedsConfig}
+              onOpenAhbotWizard={() => setWizardOpen(true)}
+            />
+          ))}
+        </Accordion>
+      )}
+
+      <AhBotWizard open={wizardOpen} onOpenChange={setWizardOpen} />
+    </>
+  )
+}
+
+export function ModulesScreen() {
+  const { refreshInstalledModules } = useServerState()
+  const [refreshing, setRefreshing] = React.useState(false)
+
+  const doRefresh = async () => {
+    setRefreshing(true)
+    try {
+      await refreshInstalledModules()
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   return (
     <div className="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-4 p-6">
@@ -94,52 +152,8 @@ export function ModulesScreen() {
       </header>
 
       <div className="min-h-0 overflow-y-auto pr-1 pb-3">
-        {ahbotNeedsConfig && (
-          <Alert className="mb-4 border-amber-500/40 bg-amber-500/10 text-amber-700 [&_svg]:text-amber-600 dark:text-amber-400 dark:[&_svg]:text-amber-400">
-            <WarningCircleIcon />
-            <AlertTitle className="font-semibold">
-              Auction House Bot needs a character
-            </AlertTitle>
-            <AlertDescription className="text-amber-700/90 dark:text-amber-300/90">
-              The AH Bot module is installed but inactive. Open the wizard
-              below to pick the character it should use as the seller.
-              <div className="mt-2">
-                <Button
-                  size="sm"
-                  onClick={() => setWizardOpen(true)}
-                  className="bg-amber-600 text-white hover:bg-amber-600/90"
-                >
-                  <UserIcon className="size-4" />
-                  Configure character
-                </Button>
-              </div>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {sorted.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <Accordion
-            type="multiple"
-            // Default open: AH Bot (if it needs config) so the user
-            // immediately sees the call-to-action context.
-            defaultValue={ahbotNeedsConfig ? ["mod-ah-bot"] : []}
-            className="space-y-2"
-          >
-            {sorted.map((m) => (
-              <ModuleSection
-                key={m.key}
-                module={m}
-                ahbotNeedsConfig={ahbotNeedsConfig}
-                onOpenAhbotWizard={() => setWizardOpen(true)}
-              />
-            ))}
-          </Accordion>
-        )}
+        <ModulesEmbedded />
       </div>
-
-      <AhBotWizard open={wizardOpen} onOpenChange={setWizardOpen} />
     </div>
   )
 }

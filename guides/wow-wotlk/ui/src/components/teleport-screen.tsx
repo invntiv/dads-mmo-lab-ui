@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ScrollFade, useCanScrollDown } from "@/components/ui/scroll-fade"
 import { useServerState } from "@/components/server-state-context"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
@@ -67,6 +68,11 @@ export function TeleportScreen() {
   const [lastResult, setLastResult] = React.useState<string | null>(null)
   const [resultKind, setResultKind] = React.useState<"ok" | "err" | null>(null)
   const [favorites, setFavorites] = React.useState<number[]>(loadFavorites)
+
+  // Ref for the scroll container so we can hang a "more content
+  // below" fade off it. Same primitive the Player Bots page uses.
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+  const canScrollDown = useCanScrollDown(scrollRef)
 
   const refresh = React.useCallback(async () => {
     if (!isTauri()) return
@@ -277,36 +283,45 @@ export function TeleportScreen() {
         </div>
       </header>
 
-      {/* The grid-row itself is the scroll container (bounded by the
-          minmax(0,1fr) track) — no nested overflow wrapper. */}
-      <div className="min-h-0 overflow-y-auto pr-1 pb-3" onScroll={onListScroll}>
-        {loadError ? (
-            <ErrorPanel message={loadError} onRetry={refresh} />
-          ) : loading && locations.length === 0 ? (
-            <SkeletonGrid />
-          ) : visible.length === 0 ? (
-            <EmptyZone />
-          ) : (
-            <>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {paged.map((loc) => (
-                  <LocationTile
-                    key={loc.id}
-                    loc={loc}
-                    isFavorite={favorites.includes(loc.id)}
-                    onTeleport={tele}
-                    onToggleFavorite={toggleFavorite}
-                    busy={busy}
-                  />
-                ))}
-              </div>
-              <div className="py-3 text-center text-xs text-muted-foreground">
-                {shown < visible.length
-                  ? `Showing ${paged.length} of ${visible.length} — scroll for more`
-                  : `${visible.length} location${visible.length === 1 ? "" : "s"}`}
-              </div>
-            </>
-          )}
+      {/* Relative wrapper hosts the bottom-fade overlay. The scroll
+          container takes h-full of this wrapper (which itself is the
+          1fr grid row), so the fade always pins to the visible
+          bottom edge regardless of scroll position. */}
+      <div className="relative min-h-0">
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto pr-1 pb-3"
+          onScroll={onListScroll}
+        >
+          {loadError ? (
+              <ErrorPanel message={loadError} onRetry={refresh} />
+            ) : loading && locations.length === 0 ? (
+              <SkeletonGrid />
+            ) : visible.length === 0 ? (
+              <EmptyZone />
+            ) : (
+              <>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {paged.map((loc) => (
+                    <LocationTile
+                      key={loc.id}
+                      loc={loc}
+                      isFavorite={favorites.includes(loc.id)}
+                      onTeleport={tele}
+                      onToggleFavorite={toggleFavorite}
+                      busy={busy}
+                    />
+                  ))}
+                </div>
+                <div className="py-3 text-center text-xs text-muted-foreground">
+                  {shown < visible.length
+                    ? `Showing ${paged.length} of ${visible.length} — scroll for more`
+                    : `${visible.length} location${visible.length === 1 ? "" : "s"}`}
+                </div>
+              </>
+            )}
+        </div>
+        <ScrollFade visible={canScrollDown} />
       </div>
 
       {lastResult && (

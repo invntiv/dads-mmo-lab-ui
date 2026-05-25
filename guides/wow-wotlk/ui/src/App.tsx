@@ -10,7 +10,6 @@ import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
 import { InstallResumeBanner } from "@/components/install-resume-banner"
 import { InventoryScreen } from "@/components/inventory-screen"
-import { ModulesScreen } from "@/components/modules-screen"
 import { PlayerbotsScreen } from "@/components/playerbots-screen"
 import { ServerControlScreen } from "@/components/server-control-screen"
 import { SettingsScreen } from "@/components/settings-screen"
@@ -59,7 +58,6 @@ function AppShell() {
     !showInstallScreen && serverActionStatus !== "idle"
   const isPagedView =
     !showInstallScreen && !showServerActionScreen && installed
-  const showModules = isPagedView && activePage === "modules"
   const showTeleport = isPagedView && activePage === "teleport"
   const showInventory = isPagedView && activePage === "inventory"
   const showPlayerbots = isPagedView && activePage === "playerbots"
@@ -76,8 +74,6 @@ function AppShell() {
     mainContent = <InstallProgressScreen />
   } else if (showServerActionScreen) {
     mainContent = <ServerControlScreen />
-  } else if (showModules) {
-    mainContent = <ModulesScreen />
   } else if (showTeleport) {
     mainContent = <TeleportScreen />
   } else if (showInventory) {

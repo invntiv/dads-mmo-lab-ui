@@ -2,12 +2,14 @@ import * as React from "react"
 import {
   ArrowClockwiseIcon,
   CheckCircleIcon,
+  DatabaseIcon,
   DownloadSimpleIcon,
   FolderOpenIcon,
   GearIcon,
   ImageIcon,
   MagicWandIcon,
   PlugsIcon,
+  PuzzlePieceIcon,
   ScrollIcon,
   SlidersIcon,
   SteamLogoIcon,
@@ -22,6 +24,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Slider } from "@/components/ui/slider"
 import { ControllerSupportSection } from "@/components/controller-support-section"
+import { ModulesEmbedded } from "@/components/modules-screen"
 import { SteamIntegrationSection } from "@/components/steam-integration-section"
 import { UpdateChecker } from "@/components/update-checker"
 import { ScrollProgress } from "@/components/ui/scroll-progress"
@@ -329,6 +332,16 @@ export function SettingsScreen() {
         className="min-h-0 space-y-10 overflow-y-auto pr-1 pb-3"
       >
         <Section
+          icon={<ArrowClockwiseIcon className="size-5 text-muted-foreground" />}
+          title="Updates"
+          subtitle="Check for a new version of The Lab and install it in place. The server, your characters, and settings are untouched."
+        >
+          <UpdateChecker />
+        </Section>
+
+        <SectionDivider />
+
+        <Section
           icon={<SlidersIcon className="size-5 text-muted-foreground" />}
           title="Audio"
           subtitle="Sound effects for installs, server start, and quitting. Mute anytime from the speaker icon in the top bar."
@@ -339,6 +352,29 @@ export function SettingsScreen() {
         <SectionDivider />
 
         <Section
+          icon={<FolderOpenIcon className="size-5 text-muted-foreground" />}
+          title="WoW client"
+          subtitle="Manage the connection to your local WoW 3.3.5a install. Connecting + setting the realmlist happen on the Dashboard via the WoW Client card; disconnecting (Forget) lives here so it can't be triggered by accident."
+        >
+          <ClientCard
+            state={clientState}
+            busyKind={
+              busy === "forget-client"
+                ? "forget"
+                : busy === "browse-client"
+                  ? "browse"
+                  : null
+            }
+            disabled={busy !== null}
+            onBrowse={browseForClient}
+            onForget={forgetClient}
+          />
+        </Section>
+
+        <SectionDivider />
+
+        <Section
+          icon={<DatabaseIcon className="size-5 text-muted-foreground" />}
           title="Data enrichment"
           subtitle="Pull metadata out of your WoW client so the Inventory, Teleport, and (eventually) Spellbook pages show real icons, tooltips, and descriptions instead of raw IDs."
         >
@@ -433,27 +469,6 @@ export function SettingsScreen() {
         <SectionDivider />
 
         <Section
-          title="WoW client"
-          subtitle="Manage the connection to your local WoW 3.3.5a install. Connecting + setting the realmlist happen on the Dashboard via the WoW Client card; disconnecting (Forget) lives here so it can't be triggered by accident."
-        >
-          <ClientCard
-            state={clientState}
-            busyKind={
-              busy === "forget-client"
-                ? "forget"
-                : busy === "browse-client"
-                  ? "browse"
-                  : null
-            }
-            disabled={busy !== null}
-            onBrowse={browseForClient}
-            onForget={forgetClient}
-          />
-        </Section>
-
-        <SectionDivider />
-
-        <Section
           icon={<SteamLogoIcon className="size-5 text-muted-foreground" />}
           title="Steam Integration"
           subtitle="Add The Lab and your WoW client to Steam as non-Steam games so they show up in Gaming Mode. Steam must be closed first — we rewrite shortcuts.vdf on disk and Steam keeps an in-memory copy while it's running."
@@ -468,11 +483,11 @@ export function SettingsScreen() {
         <SectionDivider />
 
         <Section
-          icon={<ArrowClockwiseIcon className="size-5 text-muted-foreground" />}
-          title="Updates"
-          subtitle="Check for a new version of The Lab and install it in place. The server, your characters, and settings are untouched."
+          icon={<PuzzlePieceIcon className="size-5 text-muted-foreground" />}
+          title="Modules"
+          subtitle="Per-module configuration for your AzerothCore server. Settings apply on the next worldserver restart."
         >
-          <UpdateChecker />
+          <ModulesEmbedded />
         </Section>
       </div>
     </div>

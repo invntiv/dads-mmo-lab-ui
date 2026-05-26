@@ -899,18 +899,30 @@ setup_eluna() {
 
     mkdir -p "$lua_scripts_dir"
 
-    # The Lab's dml_whisper bridge script. Lives alongside this
-    # installer at guides/wow-wotlk/eluna-scripts/dml_whisper.lua. We
-    # resolve from $BASH_SOURCE so this works whether the user ran the
-    # script via ./install-wow.sh or an absolute path.
-    local whisper_src="$script_dir/eluna-scripts/dml_whisper.lua"
-    if [ -f "$whisper_src" ]; then
-        cp "$whisper_src" "$lua_scripts_dir/dml_whisper.lua"
-        print_success "Eluna installed — whisper bridge ready."
+    # The Lab's Eluna bridge scripts. Each one wires a specific
+    # console/SOAP-callable command to a player-context action:
+    #   - dml_whisper   → whispers any message as the player (powers
+    #     `talents apply`, `autogear`, `maintenance` for party bots)
+    #   - dml_addclass  → runs `.playerbots addclass <class>` as the
+    #     player (powers the Add-to-Party wizard's spawn flow)
+    # Both live alongside this installer in guides/wow-wotlk/eluna-scripts/.
+    local copied=0
+    local missing=0
+    for script_name in dml_whisper.lua dml_addclass.lua dml_uninvite.lua; do
+        local src="$script_dir/eluna-scripts/$script_name"
+        if [ -f "$src" ]; then
+            cp "$src" "$lua_scripts_dir/$script_name"
+            copied=$((copied + 1))
+        else
+            print_warning "$script_name not found at: $src"
+            missing=$((missing + 1))
+        fi
+    done
+    if [ "$missing" -eq 0 ]; then
+        print_success "Eluna installed — $copied bridge scripts ready."
     else
-        print_warning "dml_whisper.lua not found at: $whisper_src"
-        print_warning "Eluna compiled in, but bridge script missing."
-        print_warning "Copy it manually per HOWTO-INSTALL-ELUNA.md after install."
+        print_warning "Eluna compiled in, but $missing bridge script(s) missing."
+        print_warning "Copy them manually per HOWTO-INSTALL-ELUNA.md after install."
     fi
 }
 

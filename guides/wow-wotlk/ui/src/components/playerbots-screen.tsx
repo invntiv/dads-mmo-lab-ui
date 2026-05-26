@@ -11,6 +11,7 @@ import {
   PaperPlaneTiltIcon,
   RobotIcon,
   TreeStructureIcon,
+  UserMinusIcon,
   UsersThreeIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react"
@@ -64,13 +65,25 @@ import { cn } from "@/lib/utils"
 
 /**
  * Player Bots browser. Three tabs:
- *   - "In the world" (bot_type=1) → RNDBot population. Optional "In
- *     your zone" filter narrows to bots in the user's currently-saved
- *     zone (chardb can be up to ~15min stale while logged in).
- *   - "For your party" (bot_type=2) → AddClass invite pool.
+ *   - "In the world" — every currently ONLINE bot (regardless of
+ *     account_type). Random bots, AddClass alts attached to a player,
+ *     teleported-and-stranded pool bots — they all show here so the
+ *     user has one place to answer "where are the bots near me right
+ *     now?". Optional "In your zone" filter narrows to the user's
+ *     saved zone (chardb can be ~15min stale while logged in).
+ *   - "Bot pool" — every OFFLINE bot. Dominated by the AddClass pool
+ *     waiting to be invited; also includes random bots cycling
+ *     offline via BotActiveAlone scaling. Rendered as a compact list
+ *     since offline bots have no zone/map info worth a tile.
  *   - "Settings" → placeholder for the chatter slider + ambient
  *     density slider. Lives here so the bot config doesn't pollute
  *     the global Settings page.
+ *
+ * The In-the-world / Bot-pool split is by `online` flag, NOT by
+ * `account_type` — that source-pool distinction matters at the mod
+ * level (random bots auto-pick talents; AddClass bots are master-
+ * driven), but answering "where are the bots right now?" only needs
+ * the runtime status.
  *
  * Clicking a bot card opens a Popover with per-bot actions. The
  * popover auto-closes after 4s with no hover on either the card or
@@ -87,27 +100,34 @@ type Playerbot = {
   map: number
   zone: number
   account: number
+  /** Source pool classification — 1=RNDBot, 2=AddClass. Retained so
+   *  per-bot actions can branch on capabilities (re-roll only works
+   *  on RNDBots; addclass-by-class only spawns AddClass entries),
+   *  but the tab split uses `online` instead. */
   botType: 1 | 2
+  /** True iff the bot is currently logged into the world. Drives the
+   *  In-the-world vs Bot-pool tab assignment. */
+  online: boolean
   /** Primary spec tab (0/1/2) inferred from talent distribution.
    *  null/undefined when the bot has no talents or the talent cache
    *  hasn't been extracted yet. */
   specTabIndex?: number | null
 }
 
-type TabId = "world" | "party" | "settings"
+type TabId = "world" | "pool" | "settings"
 
 const TABS: { id: TabId; label: string; description: string }[] = [
   {
     id: "world",
     label: "In the world",
     description:
-      "Random bots living in the world. They roam level-appropriate zones on their own and won't follow you unless you go fetch them.",
+      "Bots currently logged in — random roamers, party companions, and any pool bots you've teleported but haven't recruited. Use 'In your zone' to find the ones near your character.",
   },
   {
-    id: "party",
-    label: "For your party",
+    id: "pool",
+    label: "Bot pool",
     description:
-      "Pre-leveled bots waiting to be recruited. Use these to fill out a group — pick a class and they'll join you instantly.",
+      "Offline bots waiting in the wings. Most are pre-leveled AddClass entries ready to be summoned via Add to Party; a few are random bots cycling offline.",
   },
   {
     id: "settings",
@@ -181,6 +201,31 @@ export function PlayerbotsScreen() {
   // Which bot's popover is currently open. Only one at a time — clicking
   // another bot closes the previous via the parent Popover's onOpenChange.
   const [openBotGuid, setOpenBotGuid] = React.useState<number | null>(null)
+
+  // Guids of bots currently in the user's party — used to swap the
+  // popover's primary action between "Add to my party" and "Kick from
+  // party" without forcing the user to navigate to My Party first.
+  // Refreshed on mount, on character change, and after add/kick.
+  const [partyGuids, setPartyGuids] = React.useState<Set<number>>(new Set())
+  const refreshPartyGuids = React.useCallback(async () => {
+    const playerGuid = selectedCharacter?.guid
+    if (!playerGuid || !isTauri()) {
+      setPartyGuids(new Set())
+      return
+    }
+    try {
+      const members = await trackedInvoke<{ guid: number; isLeader: boolean }[]>(
+        "get_user_party",
+        { playerGuid }
+      )
+      setPartyGuids(new Set(members.filter((m) => !m.isLeader).map((m) => m.guid)))
+    } catch {
+      setPartyGuids(new Set())
+    }
+  }, [selectedCharacter?.guid])
+  React.useEffect(() => {
+    void refreshPartyGuids()
+  }, [refreshPartyGuids])
   // Set-level dialog state, mounted at page-root so the popover can
   // close cleanly when the dialog opens (Radix would otherwise stack
   // them and the popover's outside-click would dismiss the dialog).
@@ -213,18 +258,20 @@ export function PlayerbotsScreen() {
     void refresh()
   }, [refresh])
 
-  const activeBotType: 1 | 2 | null =
-    activeTab === "world" ? 1 : activeTab === "party" ? 2 : null
+  /** Which online-state the active tab is filtering for. null on
+   *  Settings (no bot list rendered). */
+  const wantsOnline: boolean | null =
+    activeTab === "world" ? true : activeTab === "pool" ? false : null
 
   const filtered = React.useMemo(() => {
-    if (activeBotType == null) return []
+    if (wantsOnline == null) return []
     const q = search.trim().toLowerCase()
     const cls = parseInt(classFilter, 10)
     const specTab = specFilter === "any" ? null : parseInt(specFilter, 10)
     const lvlOpt = LEVEL_OPTIONS.find((o) => o.value === levelFilter)
     const userZone = selectedCharacter?.zone
     return bots.filter((b) => {
-      if (b.botType !== activeBotType) return false
+      if (b.online !== wantsOnline) return false
       if (q && !b.name.toLowerCase().includes(q)) return false
       if (cls !== 0 && b.class !== cls) return false
       if (specTab != null && b.specTabIndex !== specTab) return false
@@ -238,14 +285,16 @@ export function PlayerbotsScreen() {
         if (b.level < lvlOpt.min) return false
         if (lvlOpt.max != null && b.level > lvlOpt.max) return false
       }
-      if (inYourZone && activeBotType === 1 && userZone != null && b.zone !== userZone) {
+      // "In your zone" only makes sense for online bots — offline
+      // pool bots have no current zone in the world.
+      if (inYourZone && wantsOnline && userZone != null && b.zone !== userZone) {
         return false
       }
       return true
     })
   }, [
     bots,
-    activeBotType,
+    wantsOnline,
     search,
     roleFilter,
     classFilter,
@@ -277,9 +326,9 @@ export function PlayerbotsScreen() {
 
   const tabMeta = TABS.find((t) => t.id === activeTab)!
   const totalForTab =
-    activeBotType == null
+    wantsOnline == null
       ? 0
-      : bots.filter((b) => b.botType === activeBotType).length
+      : bots.filter((b) => b.online === wantsOnline).length
 
   const runAction = async (
     label: string,
@@ -464,11 +513,24 @@ export function PlayerbotsScreen() {
             />
           ) : (
             <>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div
+                className={cn(
+                  // In-the-world tab keeps the existing 3-up tile grid
+                  // since location info is meaningful and worth visual
+                  // space. Bot pool tab switches to a single-column
+                  // list — offline bots have no zone, so dense rows
+                  // serve the "scan a long list of names" use case
+                  // better.
+                  activeTab === "pool"
+                    ? "flex flex-col gap-1.5"
+                    : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+                )}
+              >
                 {paged.map((bot) => (
                   <BotTileWithMenu
                     key={bot.guid}
                     bot={bot}
+                    compact={activeTab === "pool"}
                     open={openBotGuid === bot.guid}
                     onOpenChange={(o) =>
                       setOpenBotGuid(o ? bot.guid : null)
@@ -479,14 +541,6 @@ export function PlayerbotsScreen() {
                       setOpenBotGuid(null)
                       setLevelDialogBot(bot)
                     }}
-                    onReroll={() =>
-                      runAction(
-                        "Re-roll",
-                        trackedInvoke("reroll_playerbot", {
-                          args: { botName: bot.name },
-                        })
-                      )
-                    }
                     onSummon={() => {
                       if (!selectedCharacter) return
                       void runAction(
@@ -506,6 +560,27 @@ export function PlayerbotsScreen() {
                         classId: bot.class,
                         name: bot.name,
                       })
+                    }}
+                    isInParty={partyGuids.has(bot.guid)}
+                    onInviteToParty={() => {
+                      if (!selectedCharacter) return
+                      void runAction(
+                        "Invite to party",
+                        trackedInvoke("invite_bot_to_party", {
+                          args: {
+                            botName: bot.name,
+                            characterName: selectedCharacter.name,
+                          },
+                        })
+                      ).then(() => void refreshPartyGuids())
+                    }}
+                    onKickFromParty={() => {
+                      void runAction(
+                        "Kick from party",
+                        trackedInvoke("kick_bot_from_party", {
+                          args: { botName: bot.name },
+                        })
+                      ).then(() => void refreshPartyGuids())
                     }}
                   />
                 ))}
@@ -563,12 +638,12 @@ export function PlayerbotsScreen() {
 
 function countByType(bots: Playerbot[]): Record<TabId, number | null> {
   let world = 0
-  let party = 0
+  let pool = 0
   for (const b of bots) {
-    if (b.botType === 1) world++
-    else if (b.botType === 2) party++
+    if (b.online) world++
+    else pool++
   }
-  return { world, party, settings: null }
+  return { world, pool, settings: null }
 }
 
 function BotTypeTabs({
@@ -586,7 +661,7 @@ function BotTypeTabs({
         const Icon =
           t.id === "world"
             ? RobotIcon
-            : t.id === "party"
+            : t.id === "pool"
               ? UsersThreeIcon
               : GearSixIcon
         const count = counts[t.id]
@@ -629,10 +704,13 @@ function BotTileWithMenu({
   onOpenChange,
   serverRunning,
   hasCharacter,
+  isInParty,
+  compact = false,
   onSetLevel,
-  onReroll,
   onSummon,
   onInspect,
+  onInviteToParty,
+  onKickFromParty,
 }: {
   bot: Playerbot
   open: boolean
@@ -643,10 +721,17 @@ function BotTileWithMenu({
   /** True when the user has picked a sidebar character. Summon needs
    * one as the destination. */
   hasCharacter: boolean
+  /** True when this bot is currently a member of the user's group.
+   *  Swaps the primary popover action between Add-to-Party / Kick. */
+  isInParty: boolean
+  /** Compact single-row layout. Used on the Bot Pool tab where bots
+   *  have no live zone info worth a 3-line tile. */
+  compact?: boolean
   onSetLevel: () => void
-  onReroll: () => void
   onSummon: () => void
   onInspect: () => void
+  onInviteToParty: () => void
+  onKickFromParty: () => void
 }) {
   // Auto-close timer — restart whenever the user enters either the
   // card or the popover, expire after 4s of no hover on either.
@@ -696,12 +781,18 @@ function BotTileWithMenu({
             // without touching content size. gap-3 restored so the
             // icon-to-text gap is the same as before; the OTHER gap
             // (card-edge to icon) is what shrank.
-            "group flex w-full items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4 text-left transition-colors hover:border-primary/40",
+            "group flex w-full items-center rounded-md border border-border bg-card text-left transition-colors hover:border-primary/40",
+            compact
+              ? "gap-2.5 py-1.5 pl-2 pr-3"
+              : "gap-3 py-3 pl-3 pr-4",
             open && "border-primary/60 ring-1 ring-primary/30"
           )}
         >
           <div
-            className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted"
+            className={cn(
+              "flex shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted",
+              compact ? "size-9" : "size-14"
+            )}
             style={{ borderColor: ringColor }}
           >
             {iconName ? (
@@ -724,15 +815,33 @@ function BotTileWithMenu({
                 rendered in the same muted style as lines 2/3 so only
                 the name draws the eye. */}
             <div className="truncate leading-tight" title={`${bot.name} · ${raceName}`}>
-              <span className={cn("text-base font-semibold", classColor)}>
+              <span
+                className={cn(
+                  "font-semibold",
+                  classColor,
+                  compact ? "text-sm" : "text-base"
+                )}
+              >
                 {bot.name}
               </span>
-              <span className="text-sm text-muted-foreground"> · {raceName}</span>
+              <span
+                className={cn(
+                  "text-muted-foreground",
+                  compact ? "text-xs" : "text-sm"
+                )}
+              >
+                {" "}· {raceName}
+              </span>
             </div>
             {/* Line 2 — combat profile: Lv N · Spec · Class. Spec is
                 hidden when unknown rather than showing "—" so low-
                 level pool bots without talents read cleanly. */}
-            <div className="truncate text-sm leading-tight text-muted-foreground">
+            <div
+              className={cn(
+                "truncate leading-tight text-muted-foreground",
+                compact ? "text-xs" : "text-sm"
+              )}
+            >
               Lv {bot.level}
               {spec && (
                 <>
@@ -743,9 +852,10 @@ function BotTileWithMenu({
               {" · "}
               {shortClassName}
             </div>
-            {/* Line 3 — location: Map · Zone. Zone suppressed when 0
-                (pool bots never placed in the world). */}
-            {(mapLabel || zoneLabel) && (
+            {/* Line 3 — location: Map · Zone. Skipped in compact mode
+                since offline pool bots have no live location (the
+                stored zone is wherever they were last). */}
+            {!compact && (mapLabel || zoneLabel) && (
               <div className="truncate text-xs leading-tight text-muted-foreground">
                 {mapLabel}
                 {zoneLabel && (
@@ -798,17 +908,6 @@ function BotTileWithMenu({
             }
           />
           <ActionButton
-            icon={<MagicWandIcon className="size-4" />}
-            label="Re-roll bot"
-            onClick={onReroll}
-            disabled={!serverRunning}
-            tooltip={
-              !serverRunning
-                ? "Start the server first — Re-roll uses SOAP"
-                : "Re-randomizes class, race, talents, and gear. Identity stays, everything else changes."
-            }
-          />
-          <ActionButton
             icon={<PaperPlaneTiltIcon className="size-4" />}
             label="Teleport bot to me"
             onClick={onSummon}
@@ -821,13 +920,33 @@ function BotTileWithMenu({
                   : "Moves this bot to your character's saved position"
             }
           />
-          <ActionButton
-            icon={<UsersThreeIcon className="size-4" />}
-            label="Add to my party"
-            onClick={() => {}}
-            disabled
-            tooltip="Coming soon — needs a SOAP path we haven't researched yet"
-          />
+          {isInParty ? (
+            <ActionButton
+              icon={<UserMinusIcon className="size-4" />}
+              label="Kick from party"
+              onClick={onKickFromParty}
+              disabled={!serverRunning}
+              tooltip={
+                !serverRunning
+                  ? "Start the server first — kick goes through SOAP + Eluna"
+                  : "Removes the bot from your group. They stay online and can be re-added later."
+              }
+            />
+          ) : (
+            <ActionButton
+              icon={<UsersThreeIcon className="size-4" />}
+              label="Add to my party"
+              onClick={onInviteToParty}
+              disabled={!serverRunning || !hasCharacter}
+              tooltip={
+                !serverRunning
+                  ? "Start the server first — invites go through SOAP + Eluna"
+                  : !hasCharacter
+                    ? "Pick a character first (sidebar)"
+                    : "Whispers `invite` to the bot via Eluna — the bot sends you a standard group invite popup; click accept in-game."
+              }
+            />
+          )}
         </div>
       </PopoverContent>
     </Popover>

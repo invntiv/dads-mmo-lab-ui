@@ -1,8 +1,8 @@
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
 import {
   type ClassTrees,
   type TalentNode,
@@ -113,6 +113,7 @@ function TalentTreeBody({
           <TreeColumn
             key={tab.tabId}
             tab={tab}
+            classId={trees.classId}
             pointsSpent={perTab[i]}
             pointsByTalentId={pointsByTalentId}
             gridColumns={gridColumns}
@@ -137,11 +138,13 @@ const TAB_BACKGROUND_TINTS: Record<number, string> = {
 
 function TreeColumn({
   tab,
+  classId,
   pointsSpent,
   pointsByTalentId,
   gridColumns,
 }: {
   tab: TalentTab
+  classId: number
   pointsSpent: number
   pointsByTalentId: Record<number, number>
   gridColumns: number
@@ -156,22 +159,23 @@ function TreeColumn({
         TAB_BACKGROUND_TINTS[tab.tabIndex] ?? "from-stone-900 to-stone-900"
       )}
     >
-      {/* Tree header — name + crest + X/71 */}
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-black/30 px-2.5 py-1.5">
-        <div className="flex items-center gap-1.5 min-w-0">
+      {/* Tree header — name + crest + X/71. Sized to match the in-game
+          tree header proportions (icon ~28px, name 14px, points 12px). */}
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-black/30 px-3 py-2">
+        <div className="flex items-center gap-2 min-w-0">
           {tab.iconName && (
             <img
               src={`${ICON_CDN}/${tab.iconName}.jpg`}
               alt={tab.name}
-              className="size-5 rounded shrink-0"
+              className="size-7 rounded shrink-0"
               draggable={false}
             />
           )}
-          <span className="truncate text-xs font-semibold text-foreground/90">
+          <span className="truncate text-sm font-semibold text-foreground/90">
             {tab.name}
           </span>
         </div>
-        <span className="font-mono text-[10px] text-foreground/70">
+        <span className="font-mono text-xs text-foreground/70">
           {pointsSpent} / 71
         </span>
       </div>
@@ -190,6 +194,7 @@ function TreeColumn({
             key={talent.id}
             talent={talent}
             rank={pointsByTalentId[talent.id] ?? 0}
+            classId={classId}
           />
         ))}
       </div>
@@ -199,11 +204,19 @@ function TreeColumn({
 
 // ── Slot ───────────────────────────────────────────────────────────────
 
-function TalentSlot({ talent, rank }: { talent: TalentNode; rank: number }) {
+function TalentSlot({
+  talent,
+  rank,
+  classId,
+}: {
+  talent: TalentNode
+  rank: number
+  classId: number
+}) {
   const taken = rank > 0
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+    <HoverCard openDelay={150} closeDelay={80}>
+      <HoverCardTrigger asChild>
         <div
           // Explicit grid placement keeps the slot at its canonical
           // (row, col) regardless of iteration order.
@@ -224,37 +237,75 @@ function TalentSlot({ talent, rank }: { talent: TalentNode; rank: number }) {
               alt={talent.name}
               className={cn(
                 "size-full object-cover transition-all",
-                taken
-                  ? ""
-                  : "brightness-50 grayscale"
+                taken ? "" : "brightness-50 grayscale"
               )}
               draggable={false}
             />
           )}
           <span
             className={cn(
-              "absolute bottom-0 right-0 rounded-tl bg-black/85 px-1 py-px font-mono text-[9px] leading-tight",
+              "absolute bottom-0 right-0 rounded-tl bg-black/85 px-1 py-0.5 font-mono text-[11px] font-semibold leading-none",
               taken ? "text-amber-300" : "text-foreground/60"
             )}
           >
             {rank}/{talent.maxRank}
           </span>
         </div>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs space-y-1 text-xs">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="font-semibold">{talent.name}</span>
-          <span className="font-mono text-[10px] text-foreground/70">
-            {rank}/{talent.maxRank}
-          </span>
-        </div>
-        {talent.description && (
-          <div className="text-[11px] leading-snug text-foreground/80">
-            {talent.description}
-          </div>
+      </HoverCardTrigger>
+      {/* Wowhead-style chrome — mirrors the ItemTooltip's dark frame
+          (bg-[#070712], silver border, beveled inner shadow). Talent
+          coloration uses gold name + green/yellow description to
+          match Wowhead's talent calc tooltips. */}
+      <HoverCardContent
+        side="top"
+        align="center"
+        className={cn(
+          "w-[300px] rounded-md border border-[#9a9aaa]/70 bg-[#070712]/95 p-3 text-[12.5px] leading-snug text-white backdrop-blur",
+          "shadow-[inset_0_0_0_1px_rgba(0,0,0,0.7),0_8px_24px_rgba(0,0,0,0.7)]"
         )}
-      </TooltipContent>
-    </Tooltip>
+      >
+        <TalentTooltipBody talent={talent} rank={rank} classId={classId} />
+      </HoverCardContent>
+    </HoverCard>
+  )
+}
+
+function TalentTooltipBody({
+  talent,
+  rank,
+  classId,
+}: {
+  talent: TalentNode
+  rank: number
+  classId: number
+}) {
+  const className = CLASS_NAMES[classId] ?? ""
+  // Display rank: when 0 (untaken), show "Rank 1/N" as the rank the
+  // first point would learn (matches WoW's in-game tooltip behavior).
+  const displayRank = rank > 0 ? rank : 1
+  return (
+    <div className="space-y-1.5">
+      {/* Title — gold/amber, the WoW canonical talent name color. */}
+      <div className="text-[13px] font-semibold leading-tight text-[#ffd100]">
+        {talent.name}
+      </div>
+      {/* Sub-line: class + rank. Wowhead shows "Talent" + "Requires
+          Hunter" on separate lines; we collapse for vertical density
+          since talents only exist on one class anyway. */}
+      <div className="text-[11px] leading-tight text-zinc-300">
+        {className ? `Requires ${className} · ` : ""}Rank {displayRank} /{" "}
+        {talent.maxRank}
+      </div>
+      {/* Description — the in-game pale yellow body text. Spell
+          placeholder substitution ($s1/$s2 → numeric values) is a
+          future-work item; for now the raw template is shown so the
+          intent of the talent is still legible. */}
+      {talent.description && (
+        <div className="whitespace-pre-line pt-1 text-[12px] leading-snug text-[#ffd100]/95">
+          {talent.description}
+        </div>
+      )}
+    </div>
   )
 }
 

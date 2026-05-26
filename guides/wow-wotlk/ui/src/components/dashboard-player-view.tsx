@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/popover"
 import { ItemIconFramed } from "@/components/item-icon-framed"
 import { ItemTooltip } from "@/components/item-tooltip"
+import { TalentTree } from "@/components/talent-tree"
 import { useServerState } from "@/components/server-state-context"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { CLASS_ICONS } from "@/lib/class-icons"
@@ -95,7 +96,17 @@ const LEFT_SLOTS = [0, 1, 2, 14, 4, 3, 18, 8] // Head, Neck, Shoulder, Back, Che
 const RIGHT_SLOTS = [9, 5, 6, 7, 10, 11, 12, 13] // Hands, Waist, Legs, Feet, Ring1, Ring2, Trinket1, Trinket2
 const BOTTOM_SLOTS = [15, 16, 17] // MainHand, OffHand, Ranged
 
-export function DashboardPlayerView() {
+/**
+ * Player View page. Renders the same Gear/Talents split as the bot
+ * detail screen — Gear = status header + paperdoll; Talents = full
+ * 3-tree talent layout. The sub-tab is driven by the parent
+ * DashboardShell so it can right-align the tab pills in the header.
+ */
+export function DashboardPlayerView({
+  subTab = "gear",
+}: {
+  subTab?: "gear" | "talents"
+}) {
   // iconMap from context — loaded ONCE at app start, shared with
   // Inventory and any future item-rendering surface. No per-mount
   // IPC + 10MB JSON parse for the Paperdoll slots. tooltipData lives
@@ -104,6 +115,8 @@ export function DashboardPlayerView() {
   const [data, setData] = React.useState<CharacterPaperdoll | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [points, setPoints] = React.useState<Record<number, number>>({})
+  const [talentsError, setTalentsError] = React.useState<string | null>(null)
 
   const guid = selectedCharacter?.guid ?? null
 
@@ -143,8 +156,55 @@ export function DashboardPlayerView() {
     return () => clearInterval(handle)
   }, [guid, refresh])
 
+  // Talent allocations — fetched once per character; the data is
+  // small (a few dozen rows) and changes infrequently relative to
+  // HP/mana, so we don't poll it.
+  React.useEffect(() => {
+    if (!guid || !isTauri()) {
+      setPoints({})
+      setTalentsError(null)
+      return
+    }
+    let cancelled = false
+    trackedInvoke<Record<string, number>>("get_character_talents", { guid })
+      .then((result) => {
+        if (cancelled) return
+        const coerced: Record<number, number> = {}
+        for (const [k, v] of Object.entries(result)) {
+          coerced[Number(k)] = v
+        }
+        setPoints(coerced)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setTalentsError(typeof e === "string" ? e : String(e))
+        setPoints({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [guid])
+
   if (!selectedCharacter) {
     return <EmptyState />
+  }
+
+  if (subTab === "talents") {
+    const totalPointsAvailable = Math.max(0, selectedCharacter.level - 9)
+    return (
+      <div className="flex-1 space-y-3 p-4">
+        {talentsError && (
+          <div className="rounded-md border border-rose-500/30 bg-rose-500/5 p-3 text-xs text-rose-700 dark:text-rose-400">
+            Failed to load talents: {talentsError}
+          </div>
+        )}
+        <TalentTree
+          classId={selectedCharacter.class}
+          pointsByTalentId={points}
+          totalPointsAvailable={totalPointsAvailable}
+        />
+      </div>
+    )
   }
 
   return (

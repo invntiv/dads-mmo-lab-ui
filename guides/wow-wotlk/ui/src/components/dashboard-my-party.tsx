@@ -1,10 +1,19 @@
 import * as React from "react"
 import {
+  MagnifyingGlassIcon,
+  PaperPlaneTiltIcon,
   PlusIcon,
   UserCircleIcon,
+  UserMinusIcon,
   UsersThreeIcon,
 } from "@phosphor-icons/react"
 import { toast } from "sonner"
+
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 
 import {
   AddToPartyWizard,
@@ -24,30 +33,85 @@ import { cn } from "@/lib/utils"
 
 /**
  * Dashboard's "My Party" tab. User's selected character sits at top,
- * 4 dashed-border bot slots below; hovering an empty slot reveals an
- * "Add to party" CTA that opens the AddToPartyWizard.
+ * 4 bot slots below: filled when an actual group member exists, empty
+ * (with an Add-to-Party CTA) otherwise.
  *
  * Slot count = 4 to match a 5-man dungeon party (user is the implicit
  * 5th). Raid composition (10/25-man) is a later concern.
  *
- * No party state is persisted in this component — once Phase 2e wires
- * the spawn flow, the filled slots will be derived from a live query
- * of the user's `group_member` rows.
+ * Live data: polls `get_user_party` every POLL_INTERVAL_MS so that
+ * group changes from outside the Lab (a bot logging off, the user
+ * manually inviting/kicking, etc.) reflect within a few seconds.
+ * Also refetches immediately after the wizard's add-to-party flow
+ * returns so the new bot pops into a slot without waiting.
  */
 
 const PARTY_SLOTS = 4
+const POLL_INTERVAL_MS = 4_000
+
+interface PartyMember {
+  guid: number
+  name: string
+  classId: number
+  race: number
+  level: number
+  online: boolean
+  isLeader: boolean
+}
 
 export function DashboardMyParty() {
   const { selectedCharacter, installComplete } = useServerState()
   const [wizardOpen, setWizardOpen] = React.useState(false)
+  const [party, setParty] = React.useState<PartyMember[]>([])
 
-  // The wizard's onConfirm currently can't actually spawn a bot —
-  // Phase 2e wires `add_bot_to_party`. What we CAN do today: catch
-  // the "character isn't online" case before the user expects a bot
-  // to materialize, and acknowledge the click either way.
+  const playerGuid = selectedCharacter?.guid ?? null
+
+  const refresh = React.useCallback(async () => {
+    if (!playerGuid || !isTauri()) {
+      setParty([])
+      return
+    }
+    try {
+      const members = await trackedInvoke<PartyMember[]>("get_user_party", {
+        playerGuid,
+      })
+      setParty(members)
+    } catch (e) {
+      // Silent failure — the My Party UI keeps showing the last
+      // known good state. Loud errors would spam the toast queue on
+      // every poll tick.
+      console.warn("[my-party] get_user_party failed", e)
+    }
+  }, [playerGuid])
+
+  // Initial fetch + interval polling. Cleanup cancels on unmount /
+  // character change.
+  React.useEffect(() => {
+    void refresh()
+    if (!playerGuid) return
+    const handle = window.setInterval(() => void refresh(), POLL_INTERVAL_MS)
+    return () => window.clearInterval(handle)
+  }, [playerGuid, refresh])
+
+  // Bot members = everything that isn't the leader. Ordered by guid
+  // so the slot positions stay stable across polls. New bots fill
+  // slot 0 first, etc.
+  const bots = React.useMemo(
+    () =>
+      party
+        .filter((m) => !m.isLeader)
+        .sort((a, b) => a.guid - b.guid)
+        .slice(0, PARTY_SLOTS),
+    [party]
+  )
+
+  // Drives the full spawn → level → talents → gear → maintenance
+  // pipeline through `add_bot_to_party`. Pre-flight: character must be
+  // online (the spawn flow runs `.playerbots addclass` as the player's
+  // session via Eluna, which needs a live player).
   const handleConfirm = async (selection: AddToPartySelection) => {
     const guid = selectedCharacter?.guid
-    if (!guid || !isTauri()) {
+    if (!guid || !isTauri() || !selectedCharacter) {
       toast.error("No character selected — pick one from the sidebar first.")
       return
     }
@@ -61,29 +125,89 @@ export function DashboardMyParty() {
       return
     }
     if (!online) {
-      toast.warning(`${selectedCharacter?.name ?? "Your character"} isn't logged in`, {
+      toast.warning(`${selectedCharacter.name} isn't logged in`, {
         description:
           "Log into the game first — adding a bot summons it to your character's position and invites it to your party, both of which need you in-world.",
       })
       return
     }
-    // Phase 2e: invoke add_bot_to_party with `selection` here.
-    toast.success("Selection captured", {
-      description: `${selection.role} · ${selection.spec.specName} · Lv ${selection.targetLevel} (Lv ${selection.build.level} build) — backend wiring lands in Phase 2e; the bot won't actually spawn yet.`,
-    })
+
+    const loadingId = toast.loading(
+      `Spawning ${selection.role} ${selection.spec.specName}…`,
+      { description: `Lv ${selection.targetLevel} · Lv ${selection.build.level} build` }
+    )
+    try {
+      const result = await trackedInvoke<{
+        botName: string | null
+        steps: { label: string; ok: boolean; detail: string }[]
+      }>("add_bot_to_party", {
+        args: {
+          classId: selection.classId,
+          targetLevel: selection.targetLevel,
+          wowheadLink: selection.build.wowheadLink,
+          characterName: selectedCharacter.name,
+        },
+      })
+      const failed = result.steps.filter((s) => !s.ok)
+      if (result.botName && failed.length === 0) {
+        toast.success(`${result.botName} joined your party`, {
+          id: loadingId,
+          description: result.steps.map((s) => `✓ ${s.label}`).join(" · "),
+        })
+      } else if (result.botName) {
+        toast.warning(
+          `${result.botName} joined, but ${failed.length} step${failed.length === 1 ? "" : "s"} failed`,
+          {
+            id: loadingId,
+            description: failed
+              .map((s) => `✗ ${s.label}${s.detail ? ` — ${s.detail}` : ""}`)
+              .join(" · "),
+          }
+        )
+      } else {
+        toast.error("Bot didn't join the party", {
+          id: loadingId,
+          description: failed
+            .map((s) => `✗ ${s.label}${s.detail ? ` — ${s.detail}` : ""}`)
+            .join(" · "),
+        })
+      }
+    } catch (e) {
+      toast.error("Add-to-party failed", {
+        id: loadingId,
+        description: typeof e === "string" ? e : String(e),
+      })
+    } finally {
+      // Always re-poll — even on failure we may have partially
+      // filled a slot (e.g. bot joined but autogear errored).
+      void refresh()
+    }
   }
 
   return (
     <div className="flex flex-1 flex-col gap-4 px-4 pt-3 pb-6 lg:px-6">
       <UserPartyHeader character={selectedCharacter} installed={installComplete} />
       <div className="space-y-2">
-        {Array.from({ length: PARTY_SLOTS }, (_, i) => (
-          <EmptyPartySlot
-            key={i}
-            slotIndex={i}
-            onAdd={() => setWizardOpen(true)}
-          />
-        ))}
+        {Array.from({ length: PARTY_SLOTS }, (_, i) => {
+          const bot = bots[i]
+          if (bot) {
+            return (
+              <FilledPartySlot
+                key={bot.guid}
+                bot={bot}
+                playerName={selectedCharacter?.name ?? null}
+                onRefresh={() => void refresh()}
+              />
+            )
+          }
+          return (
+            <EmptyPartySlot
+              key={`empty-${i}`}
+              slotIndex={i}
+              onAdd={() => setWizardOpen(true)}
+            />
+          )
+        })}
       </div>
       <PartyHelpFooter />
       <AddToPartyWizard
@@ -171,6 +295,173 @@ function UserPartyHeader({
   )
 }
 
+function FilledPartySlot({
+  bot,
+  playerName,
+  onRefresh,
+}: {
+  bot: PartyMember
+  playerName: string | null
+  /** Called after Kick / Teleport succeeds so the party list re-fetches. */
+  onRefresh: () => void
+}) {
+  const { openBotDetail } = useServerState()
+  const [open, setOpen] = React.useState(false)
+  const fullClass = CLASS_NAMES[bot.classId] ?? `#${bot.classId}`
+  const shortClass = CLASS_SHORT_NAMES[bot.classId] ?? fullClass
+  const raceName = RACE_NAMES[bot.race] ?? `#${bot.race}`
+  const classColor = CLASS_COLORS[bot.classId] ?? "text-foreground"
+  const ringColor = CLASS_COLOR_HEX[bot.classId] ?? "#888"
+  const iconName = CLASS_ICON_NAMES[bot.classId]
+
+  const runKick = async () => {
+    setOpen(false)
+    const id = toast.loading(`Kicking ${bot.name}…`)
+    try {
+      await trackedInvoke("kick_bot_from_party", {
+        args: { botName: bot.name },
+      })
+      toast.success(`${bot.name} kicked from party`, { id })
+      onRefresh()
+    } catch (e) {
+      toast.error("Kick failed", {
+        id,
+        description: typeof e === "string" ? e : String(e),
+      })
+    }
+  }
+  const runTeleport = async () => {
+    setOpen(false)
+    if (!playerName) return
+    const id = toast.loading(`Summoning ${bot.name}…`)
+    try {
+      await trackedInvoke("summon_playerbot_to_character", {
+        args: { botName: bot.name, characterName: playerName },
+      })
+      toast.success(`${bot.name} teleported to you`, { id })
+    } catch (e) {
+      toast.error("Teleport failed", {
+        id,
+        description: typeof e === "string" ? e : String(e),
+      })
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex w-full items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4 text-left transition-colors hover:border-primary/40 focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+            open && "border-primary/60 ring-1 ring-primary/30"
+          )}
+        >
+          <div
+            className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted"
+            style={{ borderColor: ringColor }}
+          >
+            {iconName ? (
+              <img
+                src={`https://wow.zamimg.com/images/wow/icons/large/${iconName}.jpg`}
+                alt={fullClass}
+                className="size-full object-cover"
+                draggable={false}
+              />
+            ) : (
+              <UsersThreeIcon className="size-7 text-muted-foreground" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div
+              className="truncate leading-tight"
+              title={`${bot.name} · ${raceName}`}
+            >
+              <span className={cn("text-base font-semibold", classColor)}>
+                {bot.name}
+              </span>
+              <span className="text-sm text-muted-foreground"> · {raceName}</span>
+            </div>
+            <div className="truncate text-sm leading-tight text-muted-foreground">
+              Lv {bot.level} · {shortClass}
+            </div>
+          </div>
+          {!bot.online && (
+            <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+              Offline
+            </span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="center"
+        side="bottom"
+        className="w-64 p-2"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="space-y-0.5">
+          <PartySlotAction
+            icon={<MagnifyingGlassIcon className="size-4" />}
+            label="View details"
+            onClick={() => {
+              setOpen(false)
+              openBotDetail({
+                guid: bot.guid,
+                classId: bot.classId,
+                name: bot.name,
+              })
+            }}
+          />
+          <PartySlotAction
+            icon={<PaperPlaneTiltIcon className="size-4" />}
+            label="Teleport to me"
+            onClick={runTeleport}
+            disabled={!playerName}
+            tooltip={!playerName ? "Pick a character first" : undefined}
+          />
+          <PartySlotAction
+            icon={<UserMinusIcon className="size-4" />}
+            label="Kick from party"
+            onClick={runKick}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function PartySlotAction({
+  icon,
+  label,
+  onClick,
+  disabled,
+  tooltip,
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  tooltip?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={tooltip}
+      className={cn(
+        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors",
+        disabled
+          ? "cursor-not-allowed text-muted-foreground/60"
+          : "text-foreground hover:bg-accent hover:text-accent-foreground"
+      )}
+    >
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="flex-1">{label}</span>
+    </button>
+  )
+}
+
 function EmptyPartySlot({
   slotIndex,
   onAdd,
@@ -221,4 +512,3 @@ function PartyHelpFooter() {
     </div>
   )
 }
-

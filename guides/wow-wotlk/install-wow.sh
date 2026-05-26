@@ -5,7 +5,7 @@
 #
 #  https://github.com/DadsMmoLab/dads-mmo-lab
 #
-#  Version: 1.1.0
+#  Version: 1.2.0
 #
 #  Usage:
 #    chmod +x install-wow.sh
@@ -20,6 +20,12 @@
 #    6. Sets up the Gaming Mode launcher
 #
 #  Changelog:
+#    1.2.0 — Eluna bundled with Playerbots variant
+#      - mod-ale auto-cloned into modules/ before compile
+#      - lua_scripts/ bind mount + AC_ALE_* env vars in override
+#      - dml_whisper.lua copied in so The Lab's whisper bridge is
+#        live the first time the server starts (powers My Party gear
+#        automation + future "act as player" features)
 #    1.1.0 — Error handling overhaul
 #      - Keyring reset now checks health first and requires confirmation
 #      - install_docker() surfaces real errors instead of silencing them
@@ -30,7 +36,7 @@
 #      - Heredoc launcher synced with standalone launcher scripts
 # ============================================================
 
-WIZARD_VERSION="1.1.0"
+WIZARD_VERSION="1.2.0"
 
 set -o pipefail
 
@@ -661,6 +667,11 @@ OVERRIDE
                 --branch=master \
                 "$SERVER_DIR/modules/mod-playerbots"
 
+            # Bundle Eluna + The Lab's dml_whisper bridge BEFORE the
+            # build so they're baked into the compiled worldserver
+            # image. Adding Eluna later means a 2-4 hr rebuild.
+            setup_eluna
+
             cat > "$SERVER_DIR/docker-compose.override.yml" << 'OVERRIDE'
 services:
   ac-worldserver:
@@ -669,11 +680,53 @@ services:
       target: worldserver
     volumes:
       - ./modules:/azerothcore/modules
+      # Eluna script directory — dml_whisper.lua lives here. ALE
+      # reads from the absolute path set in AC_ALE_SCRIPT_PATH below.
+      - ./lua_scripts:/azerothcore/env/dist/bin/lua_scripts
     environment:
       AC_PLAYERBOTS_UPDATES_ENABLE_DATABASES: "1"
       AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
       AC_AI_PLAYERBOT_MIN_RANDOM_BOTS: "50"
       AC_AI_PLAYERBOT_MAX_RANDOM_BOTS: "200"
+      # ── Bot talent / leveling behavior ────────────────────────
+      # These mirror the mod's documented defaults from
+      # playerbots.conf.dist. The conf system warns about them as
+      # "missing" because mod-playerbots ships a .conf.dist that
+      # isn't picked up at runtime — we set them explicitly so the
+      # mod's documented defaults apply and the worldserver log
+      # stays quiet. AutoPickTalents=1 is what powers our My Party
+      # flow: a `talents spec <name>` whisper sets the template and
+      # AutoPickTalents keeps filling it out on level-up.
+      AC_AI_PLAYERBOT_AUTO_PICK_TALENTS: "1"
+      AC_AI_PLAYERBOT_LIMIT_TALENTS_EXPANSION: "0"
+      AC_AI_PLAYERBOT_ALT_MAINTENANCE_TALENT_TREE: "1"
+      AC_AI_PLAYERBOT_ALT_MAINTENANCE_PET_TALENTS: "1"
+      # Smart-scale: when you're playing alone, bot population
+      # activity scales with your level so the world feels populated
+      # without spawning bots everywhere.
+      AC_AI_PLAYERBOT_BOT_ACTIVE_ALONE_SMART_SCALE: "1"
+      AC_AI_PLAYERBOT_BOT_ACTIVE_ALONE_SMART_SCALE_DIFF_LIMITFLOOR: "50"
+      AC_AI_PLAYERBOT_BOT_ACTIVE_ALONE_SMART_SCALE_DIFF_LIMIT_CEILING: "200"
+      AC_AI_PLAYERBOT_BOT_ACTIVE_ALONE_SMART_SCALE_WHEN_MIN_LEVEL: "1"
+      AC_AI_PLAYERBOT_BOT_ACTIVE_ALONE_SMART_SCALE_WHEN_MAX_LEVEL: "80"
+      # Healer bots stop DPS'ing in dungeons/raids (the full WotLK
+      # dungeon+raid map list, copied verbatim from the conf.dist
+      # default).
+      AC_AI_PLAYERBOT_HEALER_DPSMAP_RESTRICTION: "1"
+      AC_AI_PLAYERBOT_RESTRICTED_HEALER_DPSMAPS: "33,34,36,43,47,48,70,90,109,129,209,229,230,329,349,389,429,1001,1004,1007,269,540,542,543,545,546,547,552,553,554,555,556,557,558,560,585,574,575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"
+      # ── Eluna (mod-ale) configuration ─────────────────────────
+      # ScriptPath is absolute on purpose: worldserver's CWD is
+      # /azerothcore, so a relative "lua_scripts" would resolve to
+      # /azerothcore/lua_scripts (which isn't mounted). Using the
+      # full path matches the bind mount above.
+      AC_ALE_ENABLED: "1"
+      AC_ALE_TRACE_BACK: "1"
+      AC_ALE_AUTO_RELOAD: "1"
+      AC_ALE_AUTO_RELOAD_INTERVAL: "1000"
+      AC_ALE_BYTECODE_CACHE: "0"
+      AC_ALE_SCRIPT_PATH: "/azerothcore/env/dist/bin/lua_scripts"
+      AC_ALE_REQUIRE_PATHS: ""
+      AC_ALE_REQUIRE_CPATHS: ""
   ac-authserver:
     build:
       context: .
@@ -809,6 +862,55 @@ install_modules_playerbots() {
     print_info "Playerbots modules configured during compilation"
     if [ "$MOD_AHBOT" = true ]; then
         print_info "AH Bot: configure via worldserver.conf after server starts"
+    fi
+}
+
+# ─────────────────────────────────────────
+# ELUNA / WHISPER BRIDGE (Playerbots only)
+# ─────────────────────────────────────────
+# Eluna (mod-ale) is a Lua scripting layer for AzerothCore. We bundle
+# it into every fresh Playerbots install because it's the only way to
+# send chat whispers AS a player from outside the game — which is the
+# canonical channel for invoking mod-playerbots commands like
+# `talents spec <name>`, `autogear`, and `maintenance`. The Lab UI's
+# My Party feature depends on this bridge.
+#
+# Caller contract: must be invoked from the playerbots branch BEFORE
+# the docker build, with $SERVER_DIR set and the modules/ dir present.
+setup_eluna() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local modules_dir="$SERVER_DIR/modules"
+    local lua_scripts_dir="$SERVER_DIR/lua_scripts"
+
+    print_info "Installing Eluna (mod-ale) for whisper bridge..."
+    if [ -d "$modules_dir/mod-ale" ]; then
+        print_info "mod-ale already present — skipping clone."
+    else
+        if ! git clone --depth 1 \
+            https://github.com/azerothcore/mod-ale.git \
+            "$modules_dir/mod-ale"; then
+            print_warning "mod-ale clone failed. The server will still build,"
+            print_warning "but My Party gear automation won't work. You can"
+            print_warning "retry later via HOWTO-INSTALL-ELUNA.md."
+            return 0
+        fi
+    fi
+
+    mkdir -p "$lua_scripts_dir"
+
+    # The Lab's dml_whisper bridge script. Lives alongside this
+    # installer at guides/wow-wotlk/eluna-scripts/dml_whisper.lua. We
+    # resolve from $BASH_SOURCE so this works whether the user ran the
+    # script via ./install-wow.sh or an absolute path.
+    local whisper_src="$script_dir/eluna-scripts/dml_whisper.lua"
+    if [ -f "$whisper_src" ]; then
+        cp "$whisper_src" "$lua_scripts_dir/dml_whisper.lua"
+        print_success "Eluna installed — whisper bridge ready."
+    else
+        print_warning "dml_whisper.lua not found at: $whisper_src"
+        print_warning "Eluna compiled in, but bridge script missing."
+        print_warning "Copy it manually per HOWTO-INSTALL-ELUNA.md after install."
     fi
 }
 

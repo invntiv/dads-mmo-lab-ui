@@ -17,6 +17,7 @@ mod soap;
 mod steam_shortcuts;
 mod talent_dataset;
 mod talent_harvest;
+pub mod talent_trees;
 mod teleport;
 mod wow_client;
 
@@ -118,6 +119,7 @@ pub fn run() {
             playerbots::summon_playerbot_to_character,
             talent_harvest::harvest_talent_builds,
             talent_dataset::build_talent_dataset,
+            talent_trees::build_talent_trees,
             inventory::search_items,
             inventory::get_item_details,
             inventory::get_items_by_entries,
@@ -148,6 +150,8 @@ pub fn run() {
             dashboard::gm_set_health_pct,
             dashboard::gm_set_power_pct,
             dashboard::gm_revive,
+            dashboard::is_character_online,
+            dashboard::get_character_talents,
             controller::get_consoleportlk_status,
             controller::install_consoleportlk,
             controller::find_wow_steam_shortcut,

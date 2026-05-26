@@ -61,7 +61,7 @@ type EquippedItem = {
   count: number
 }
 
-type CharacterPaperdoll = {
+export type CharacterPaperdoll = {
   guid: number
   name: string
   account: number
@@ -729,7 +729,7 @@ function ErrorRow({ message }: { message: string }) {
 
 // ── Paperdoll grid ─────────────────────────────────────────────────
 
-function Paperdoll({
+export function Paperdoll({
   data,
   iconMap,
 }: {

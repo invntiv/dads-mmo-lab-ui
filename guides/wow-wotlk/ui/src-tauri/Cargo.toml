@@ -4,6 +4,11 @@ version = "0.0.1"
 description = "Dad's MMO Lab presents THE LAB"
 authors = ["0xV31L", "https://x.com/0xVe1L", "Dad's MMO Lab"]
 edition = "2021"
+# We ship a second bin (`extract_trees`) used during dev to regenerate
+# talent-trees.json without running the full Tauri webview. Without
+# this, `cargo run` (as Tauri's dev command issues it) fails with
+# "could not determine which binary to run".
+default-run = "the-lab"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

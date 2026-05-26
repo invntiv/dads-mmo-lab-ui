@@ -249,6 +249,105 @@ pub fn gm_revive(guid: u64) -> Result<(), String> {
     gm_set_health_pct(guid, 100)
 }
 
+/// Fetch a character's current talent allocations as a flat map
+/// keyed by Talent.dbc primary key → 1-based rank (number of points
+/// spent in that talent). Used by the My Talents dashboard tab + the
+/// Bot Detail page's Talents tab.
+///
+/// `character_talent.spell` stores the spell_id of the *learned*
+/// rank (each rank of a talent is its own spell_id). We resolve that
+/// through the talent cache built from Talent.dbc + TalentTab.dbc —
+/// every spell_id maps to a (talent_id, rank) pair. Rank is 0-indexed
+/// in the cache; we return 1-indexed so the frontend can render
+/// "{rank}/{maxRank}" directly.
+#[tauri::command]
+pub fn get_character_talents(guid: u64) -> Result<std::collections::HashMap<i32, u8>, String> {
+    let cache = crate::client_assets::load_talent_data().map_err(|e| {
+        format!(
+            "Talent cache not loaded: {e}. Run Settings → Talents → \
+             Extract talents first."
+        )
+    })?;
+
+    let container = find_database_container()
+        .ok_or_else(|| "ac-database container not found — is the server running?".to_string())?;
+
+    let sql = format!(
+        "SELECT spell FROM acore_characters.character_talent WHERE guid = {guid};"
+    );
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec", &container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql,
+        ])
+        .output()
+        .map_err(|e| format!("docker exec mysql: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "mysql query failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let mut result: std::collections::HashMap<i32, u8> = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(spell_str) = line.trim().split('\t').next() else {
+            continue;
+        };
+        if spell_str.is_empty() {
+            continue;
+        }
+        // The cache keys are stringified spell_ids — match the same.
+        let Some(info) = cache.spell_to_talent.get(spell_str) else {
+            continue;
+        };
+        // Prefer the highest rank we see for a given talent. Normally
+        // each talent has one row, but defensive in case duplicates
+        // sneak in across dual-spec / glyph migrations.
+        let rank_1based = info.rank.saturating_add(1);
+        result
+            .entry(info.talent_id)
+            .and_modify(|r| {
+                if rank_1based > *r {
+                    *r = rank_1based;
+                }
+            })
+            .or_insert(rank_1based);
+    }
+    Ok(result)
+}
+
+/// True iff the character is currently logged into the game world.
+///
+/// Used by party-management flows (Add-to-Party, etc.) to bail with a
+/// useful toast before issuing commands that require the character to
+/// be in-world (e.g. summoning a bot to their position, .group join).
+/// Returns Err only on database connection issues — a missing character
+/// row returns Ok(false), since "not logged in" is the same outcome
+/// either way.
+#[tauri::command]
+pub fn is_character_online(guid: u64) -> Result<bool, String> {
+    let container = find_database_container()
+        .ok_or_else(|| "ac-database container not found — is the server running?".to_string())?;
+    let sql = format!(
+        "SELECT online FROM acore_characters.characters WHERE guid = {guid};"
+    );
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec", &container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql,
+        ])
+        .output()
+        .map_err(|e| format!("docker exec mysql: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "mysql query failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let val: u32 = stdout.lines().next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    Ok(val == 1)
+}
+
 fn find_database_container() -> Option<String> {
     let out = std::process::Command::new("docker")
         .args(["ps", "--format", "{{.Names}}"])

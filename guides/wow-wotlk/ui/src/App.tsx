@@ -4,6 +4,7 @@ import type { CSSProperties } from "react"
 import { AhBotIntroOverlay } from "@/components/ahbot-intro-overlay"
 import { SplashScreen } from "@/components/splash-screen"
 import { AppSidebar } from "@/components/app-sidebar"
+import { BotDetailScreen } from "@/components/bot-detail-screen"
 import { DashboardShell } from "@/components/dashboard-shell"
 import { HelpScreen } from "@/components/help-screen"
 import { InstallOnboarding } from "@/components/install-onboarding"
@@ -19,6 +20,7 @@ import {
 } from "@/components/server-state-context"
 import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WelcomeScreen } from "@/components/welcome-screen"
 
@@ -32,6 +34,10 @@ export default function App() {
       <ServerStateProvider>
         <AppShell />
       </ServerStateProvider>
+      {/* Sonner mount — every toast() call anywhere in the app
+          renders through here. Outside ServerStateProvider so a
+          provider error still surfaces a toast. */}
+      <Toaster position="top-right" richColors closeButton />
       {!splashDone && <SplashScreen onDone={() => setSplashDone(true)} />}
     </TooltipProvider>
   )
@@ -58,6 +64,7 @@ function AppShell() {
   const showTeleport = isPagedView && activePage === "teleport"
   const showInventory = isPagedView && activePage === "inventory"
   const showPlayerbots = isPagedView && activePage === "playerbots"
+  const showBotDetail = isPagedView && activePage === "botDetail"
   const showSettings = isPagedView && activePage === "settings"
   const showDashboard = isPagedView && activePage === "dashboard"
   // Help lives under the always-available "More" menu, so it routes even
@@ -77,6 +84,8 @@ function AppShell() {
     mainContent = <InventoryScreen />
   } else if (showPlayerbots) {
     mainContent = <PlayerbotsScreen />
+  } else if (showBotDetail) {
+    mainContent = <BotDetailScreen />
   } else if (showSettings) {
     mainContent = <SettingsScreen />
   } else if (showHelp) {

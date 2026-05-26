@@ -21,6 +21,7 @@ import {
   ALL_ROLES,
   type Role,
   type SpecEntry,
+  type TalentBuild,
   formatSpecName,
   getBuildAtLevel,
   getBuildLevels,
@@ -56,11 +57,30 @@ import { cn } from "@/lib/utils"
 
 type Step = "role" | "class" | "spec" | "level"
 
+/** Lower / upper bounds for the bot-level input. mod-playerbots allows
+ *  1..80 broadly; class-specific constraints (e.g. DK starts at 55)
+ *  surface at spawn time rather than being enforced here. */
+const MIN_BOT_LEVEL = 1
+const MAX_BOT_LEVEL = 80
+
+/** Talent points unlock at Lv 10, one per level. Used to surface the
+ *  partial-application warning when a chosen build commits more
+ *  points than the bot will have at its target level. */
+function pointsAtLevel(level: number): number {
+  return Math.max(0, level - 9)
+}
+
 export interface AddToPartySelection {
   role: Role
   classId: number
   spec: SpecEntry
-  level: number
+  /** Chosen talent template — its level identifies the build, but the
+   *  bot's actual level comes from `targetLevel`. */
+  build: TalentBuild
+  /** Bot's spawn level — independent of the build's intended level.
+   *  mod-playerbots fills the template in order, stopping when it
+   *  runs out of talent points; remaining points fill on level-up. */
+  targetLevel: number
 }
 
 interface AddToPartyWizardProps {
@@ -81,7 +101,11 @@ export function AddToPartyWizard({
   const [role, setRole] = React.useState<Role | null>(null)
   const [classId, setClassId] = React.useState<number | null>(null)
   const [spec, setSpec] = React.useState<SpecEntry | null>(null)
-  const [level, setLevel] = React.useState<number | null>(null)
+  // Two distinct concerns: WHICH talent template (one of the mod's
+  // PremadeSpecLink levels — usually 60/65/70/80) and at WHAT level
+  // the bot spawns (free 1..80, defaults to the user's own level).
+  const [buildLevel, setBuildLevel] = React.useState<number | null>(null)
+  const [targetLevel, setTargetLevel] = React.useState<number | null>(null)
 
   // Reset everything when the dialog closes. The next open starts at
   // role-pick; we don't try to persist mid-flow state across opens.
@@ -91,7 +115,8 @@ export function AddToPartyWizard({
       setRole(null)
       setClassId(null)
       setSpec(null)
-      setLevel(null)
+      setBuildLevel(null)
+      setTargetLevel(null)
     }
   }, [open])
 
@@ -99,19 +124,26 @@ export function AddToPartyWizard({
     setRole(r)
     setClassId(null)
     setSpec(null)
-    setLevel(null)
+    setBuildLevel(null)
+    setTargetLevel(null)
     setStep("class")
   }
   const handlePickClass = (cid: number) => {
     setClassId(cid)
     setSpec(null)
-    setLevel(null)
+    setBuildLevel(null)
+    setTargetLevel(null)
     setStep("spec")
   }
   const handlePickSpec = (s: SpecEntry) => {
     setSpec(s)
-    const target = characterLevel ?? 80
-    setLevel(snapToBuildLevel(s, target))
+    // Default the build to the snap-down match for the user's level
+    // (Lv 50 → Lv 60 build since most specs only have 60+ entries).
+    // Default the spawn level to the user's own level so a Lv 50
+    // player gets a Lv 50 companion by default.
+    const charLevel = characterLevel ?? 80
+    setBuildLevel(snapToBuildLevel(s, charLevel))
+    setTargetLevel(clampLevel(charLevel))
     setStep("level")
   }
 
@@ -122,8 +154,12 @@ export function AddToPartyWizard({
   }
 
   const handleConfirm = () => {
-    if (!role || classId === null || !spec || level === null) return
-    onConfirm?.({ role, classId, spec, level })
+    if (!role || classId === null || !spec || buildLevel === null || targetLevel === null) {
+      return
+    }
+    const build = getBuildAtLevel(spec, buildLevel)
+    if (!build) return
+    onConfirm?.({ role, classId, spec, build, targetLevel })
     onOpenChange(false)
   }
 
@@ -141,7 +177,8 @@ export function AddToPartyWizard({
               role={role}
               classId={classId}
               spec={spec}
-              level={level}
+              buildLevel={buildLevel}
+              targetLevel={targetLevel}
             />
           </DialogDescription>
         </DialogHeader>
@@ -161,8 +198,10 @@ export function AddToPartyWizard({
           {step === "level" && spec && (
             <LevelStep
               spec={spec}
-              selectedLevel={level}
-              onPickLevel={setLevel}
+              buildLevel={buildLevel}
+              targetLevel={targetLevel}
+              onPickBuildLevel={setBuildLevel}
+              onPickTargetLevel={setTargetLevel}
               characterLevel={characterLevel}
             />
           )}
@@ -178,7 +217,7 @@ export function AddToPartyWizard({
           {step === "level" && (
             <Button
               onClick={handleConfirm}
-              disabled={level === null}
+              disabled={buildLevel === null || targetLevel === null}
               className="ml-auto"
             >
               <CheckCircleIcon className="size-4" weight="fill" />
@@ -338,71 +377,222 @@ function SpecStep({
 }
 
 // ───────────────────────────────────────────────────────────────────
-// Step 4 — Level
+// Step 4 — Build + Level
 // ───────────────────────────────────────────────────────────────────
+//
+// Two controls share this step:
+//   1. Build template — which of the mod's PremadeSpecLink entries
+//      (usually Lv 60 and Lv 80, sometimes 65/70) defines the talent
+//      allocation order
+//   2. Bot level — free 1..80 with a number input; defaults to the
+//      user's own level so a Lv 50 player gets a Lv 50 companion
+//
+// mod-playerbots applies the chosen template by walking each talent
+// in row-major order, spending points until the bot's pool is empty
+// (Lv N → max(0, N-9) points). A Lv 80 template applied to a Lv 50
+// bot fills the first 41 points of the template; remaining levels
+// auto-fill with AutoPickTalents=1 on the worldserver.
 
 function LevelStep({
   spec,
-  selectedLevel,
-  onPickLevel,
+  buildLevel,
+  targetLevel,
+  onPickBuildLevel,
+  onPickTargetLevel,
   characterLevel,
 }: {
   spec: SpecEntry
-  selectedLevel: number | null
-  onPickLevel: (lvl: number) => void
+  buildLevel: number | null
+  targetLevel: number | null
+  onPickBuildLevel: (lvl: number) => void
+  onPickTargetLevel: (lvl: number) => void
   characterLevel?: number
 }) {
-  const levels = React.useMemo(() => getBuildLevels(spec), [spec])
+  const buildLevels = React.useMemo(() => getBuildLevels(spec), [spec])
   const build =
-    selectedLevel !== null ? getBuildAtLevel(spec, selectedLevel) : null
+    buildLevel !== null ? getBuildAtLevel(spec, buildLevel) : null
+  const botPoints = targetLevel !== null ? pointsAtLevel(targetLevel) : 0
+  const buildPoints = build?.totalPoints ?? 0
+  const underAllocated = build !== null && botPoints < buildPoints
+  const appliedPoints = Math.min(botPoints, buildPoints)
+
+  // Recommend a higher build when the bot's talent pool overshoots
+  // the chosen template — picking a higher build keeps more talent
+  // assignments on a curated template instead of falling back to
+  // mod-playerbots' AutoPickTalents fill. We pick the HIGHEST
+  // available higher build so the bot levels toward the most
+  // comprehensive premade trajectory (the user's stated preference:
+  // "the bot will level into the 80 build").
+  const recommendedHigher = React.useMemo(() => {
+    if (buildLevel === null) return null
+    const higher = buildLevels.filter((b) => b > buildLevel)
+    if (higher.length === 0) return null
+    if (botPoints <= buildPoints) return null // current build already fits
+    return Math.max(...higher)
+  }, [buildLevels, buildLevel, botPoints, buildPoints])
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      {/* Build template picker */}
+      <div>
+        <div className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">
+          Talent build
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {buildLevels.map((lvl) => (
+            <button
+              key={lvl}
+              type="button"
+              onClick={() => onPickBuildLevel(lvl)}
+              className={cn(
+                "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+                buildLevel === lvl
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card hover:border-primary/60 hover:bg-primary/5"
+              )}
+            >
+              Lv {lvl} build
+            </button>
+          ))}
+        </div>
+        {build && (
+          <div className="mt-2 rounded-md border border-border bg-muted/30 p-3 text-xs">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="font-semibold text-foreground">
+                {formatSpecName(spec.specName)}
+              </span>
+              <span className="text-muted-foreground">
+                {build.treeDistribution.join(" / ")} ({build.totalPoints} pts)
+              </span>
+            </div>
+            <div className="break-all font-mono text-[10px] text-muted-foreground">
+              {build.wowheadLink}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bot level input — independent of the build's intended level */}
       <div>
         <div className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">
           Bot level
           {characterLevel !== undefined && (
             <span className="ml-1.5 normal-case tracking-normal">
-              · default snaps to your Lv {characterLevel}
+              · defaults to your Lv {characterLevel}
             </span>
           )}
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {levels.map((lvl) => (
-            <button
-              key={lvl}
-              type="button"
-              onClick={() => onPickLevel(lvl)}
-              className={cn(
-                "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
-                selectedLevel === lvl
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-card hover:border-primary/60 hover:bg-primary/5"
-              )}
-            >
-              Lv {lvl}
-            </button>
-          ))}
-        </div>
+        <LevelStepper
+          value={targetLevel ?? characterLevel ?? 80}
+          onChange={onPickTargetLevel}
+        />
+        {build && targetLevel !== null && (
+          <div
+            className={cn(
+              "mt-2 rounded-md border p-2.5 text-xs",
+              recommendedHigher !== null
+                ? "border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400"
+                : "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+            )}
+          >
+            {recommendedHigher !== null ? (
+              <>
+                A higher level build exists for this configuration. Select
+                the{" "}
+                <button
+                  type="button"
+                  onClick={() => onPickBuildLevel(recommendedHigher)}
+                  className="font-semibold underline underline-offset-2 hover:no-underline"
+                >
+                  Lv {recommendedHigher} build
+                </button>{" "}
+                above so the bot levels into that template — otherwise the
+                Lv {build.level} build runs out of room at {buildPoints} of
+                the {botPoints} talent points available at Lv {targetLevel},
+                and the remaining {botPoints - buildPoints} auto-pick.
+              </>
+            ) : underAllocated ? (
+              // mod-playerbots places template talents at fixed
+              // (row, col, rank) per the conf — it is NOT random.
+              // For party-recruited "alt" bots, level-ups don't
+              // auto-trigger the apply; the Lab whispers `maintenance`
+              // on level-up to keep the template in sync.
+              <>
+                At Lv {targetLevel} the bot has {botPoints} talent point
+                {botPoints === 1 ? "" : "s"}; this Lv {build.level} build
+                commits {buildPoints}. The mod places {appliedPoints}/
+                {buildPoints} in template order now — as the bot levels,
+                the Lab issues `maintenance` whispers so remaining
+                template entries fill in the same order.
+              </>
+            ) : (
+              <>
+                Bot has {botPoints} talent points at Lv {targetLevel}; the
+                Lv {build.level} build commits {buildPoints}. Full build
+                applies.
+              </>
+            )}
+          </div>
+        )}
       </div>
-
-      {build && (
-        <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="font-semibold text-foreground">
-              {formatSpecName(spec.specName)} — Lv {build.level}
-            </span>
-            <span className="text-muted-foreground">
-              {build.treeDistribution.join(" / ")} ({build.totalPoints} pts)
-            </span>
-          </div>
-          <div className="break-all font-mono text-[10px] text-muted-foreground">
-            {build.wowheadLink}
-          </div>
-        </div>
-      )}
     </div>
   )
+}
+
+/** Number input with +/- buttons and direct edit, clamped to
+ *  MIN_BOT_LEVEL..MAX_BOT_LEVEL. */
+function LevelStepper({
+  value,
+  onChange,
+}: {
+  value: number
+  onChange: (next: number) => void
+}) {
+  const dec = () => onChange(clampLevel(value - 1))
+  const inc = () => onChange(clampLevel(value + 1))
+  return (
+    <div className="flex items-stretch gap-1.5">
+      <button
+        type="button"
+        onClick={dec}
+        disabled={value <= MIN_BOT_LEVEL}
+        className="flex size-9 items-center justify-center rounded-md border border-border bg-card text-base font-semibold transition-colors hover:border-primary/60 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Decrease level"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={MIN_BOT_LEVEL}
+        max={MAX_BOT_LEVEL}
+        value={value}
+        onChange={(e) => {
+          const n = Number(e.target.value)
+          if (Number.isFinite(n)) onChange(clampLevel(Math.round(n)))
+        }}
+        // Hide the native spinner arrows — we ship custom +/- buttons.
+        // Scoped via arbitrary-selector utilities so other number
+        // inputs in the app keep their default UI.
+        className="w-16 rounded-md border border-border bg-card text-center text-base font-semibold tabular-nums focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
+      />
+      <button
+        type="button"
+        onClick={inc}
+        disabled={value >= MAX_BOT_LEVEL}
+        className="flex size-9 items-center justify-center rounded-md border border-border bg-card text-base font-semibold transition-colors hover:border-primary/60 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Increase level"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+function clampLevel(n: number): number {
+  if (n < MIN_BOT_LEVEL) return MIN_BOT_LEVEL
+  if (n > MAX_BOT_LEVEL) return MAX_BOT_LEVEL
+  return n
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -414,14 +604,22 @@ function StepCrumbs({
   role,
   classId,
   spec,
-  level,
+  buildLevel,
+  targetLevel,
 }: {
   step: Step
   role: Role | null
   classId: number | null
   spec: SpecEntry | null
-  level: number | null
+  buildLevel: number | null
+  targetLevel: number | null
 }) {
+  // Final crumb collapses the two related numbers into one chip so
+  // the breadcrumb stays a single line on a narrow dialog.
+  const levelLabel =
+    buildLevel !== null && targetLevel !== null
+      ? `Lv ${targetLevel} · Lv ${buildLevel} build`
+      : "Build + Level"
   const crumbs: { label: string; active: boolean; placeholder: string }[] = [
     {
       label: role ?? "Role",
@@ -439,9 +637,9 @@ function StepCrumbs({
       placeholder: "Spec",
     },
     {
-      label: level !== null ? `Lv ${level}` : "Level",
+      label: levelLabel,
       active: step === "level",
-      placeholder: "Level",
+      placeholder: "Build + Level",
     },
   ]
   return (

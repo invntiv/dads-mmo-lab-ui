@@ -4,13 +4,19 @@ Dad's MMO Lab — bridging The Lab UI to your bots
 
 ---
 
+> ✨ **Good news for fresh installs.** As of `install-wow.sh` **v1.2.0**, the Playerbots variant bundles Eluna automatically — `mod-ale` is cloned into your modules folder and `dml_whisper.lua` is dropped into `lua_scripts/` before the first compile. **If you're doing a fresh install, you don't need this guide.**
+>
+> This document is for **retrofitting an existing Playerbots install** that was set up with an older installer. The Lab UI will continue to work without Eluna — you'll just lose automatic gear application in My Party.
+
+---
+
 ## What is this thing?
 
 **Eluna** is a Lua scripting layer for AzerothCore. With it installed, The Lab can control your bots in ways that aren't possible otherwise — specifically, it lets the app send chat whispers to your bots *as your character*, which is how mod-playerbots accepts most of its commands (set a spec, equip gear, top off skills).
 
 Without Eluna, The Lab's "My Party" feature can still spec your bots' talents, but **gear application won't work automatically**. With Eluna, the app can fully outfit a bot with one click.
 
-This guide walks you through installing Eluna manually. A future release of `manage-wow-modules.sh` will automate this for you.
+This guide walks you through installing Eluna manually on an **existing** Playerbots server.
 
 ---
 
@@ -145,4 +151,4 @@ Once Eluna is installed, The Lab's **My Party** feature can:
 
 Without Eluna, you'll get talent application but no automatic gear. The app will tell you when Eluna is missing.
 
-A future release will install Eluna for you via `manage-wow-modules.sh` — the same tool you use for AH Bot, Solocraft, and the other modules. Until then, this manual path is the way.
+For fresh Playerbots installs, `install-wow.sh` v1.2.0+ handles all of the above automatically — no manual steps. This guide stays around for retrofits and for understanding what the installer does under the hood.

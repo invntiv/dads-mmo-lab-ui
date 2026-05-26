@@ -68,11 +68,11 @@ const LOCALE_MPQS: &[&str] = &[
 /// archive names use Windows-style paths and `wow_mpq` doesn't
 /// normalize.
 const ITEM_DISPLAY_INFO_PATH: &str = "DBFilesClient\\ItemDisplayInfo.dbc";
-const SPELL_PATH: &str = "DBFilesClient\\Spell.dbc";
-const SPELL_ICON_PATH: &str = "DBFilesClient\\SpellIcon.dbc";
+pub(crate) const SPELL_PATH: &str = "DBFilesClient\\Spell.dbc";
+pub(crate) const SPELL_ICON_PATH: &str = "DBFilesClient\\SpellIcon.dbc";
 const ITEM_SET_PATH: &str = "DBFilesClient\\ItemSet.dbc";
-const TALENT_PATH: &str = "DBFilesClient\\Talent.dbc";
-const TALENT_TAB_PATH: &str = "DBFilesClient\\TalentTab.dbc";
+pub(crate) const TALENT_PATH: &str = "DBFilesClient\\Talent.dbc";
+pub(crate) const TALENT_TAB_PATH: &str = "DBFilesClient\\TalentTab.dbc";
 
 /// Open the standard 3.3.5a patch-chain. Skips MPQs that aren't
 /// present (some clients ship without certain patches). Returns an
@@ -83,7 +83,7 @@ const TALENT_TAB_PATH: &str = "DBFilesClient\\TalentTab.dbc";
 /// opening each archive, so the UI can show "Opening lichking.MPQ
 /// (4/14)…" instead of a single static "Opening MPQ patch chain…"
 /// spinner that sits for 90% of the extraction's wall-clock.
-fn open_patch_chain(
+pub(crate) fn open_patch_chain(
     wow_dir: &Path,
     window: Option<(&tauri::Window, &str)>,
 ) -> Result<PatchChain, String> {
@@ -145,7 +145,7 @@ fn open_patch_chain(
 /// Pick the best non-empty locale string out of an ExtendedLocalizedString.
 /// 3.3.5a clients write English to `en_gb`; some forks use `en_us`. Fall
 /// back across both.
-fn loc(s: &wow_dbc::ExtendedLocalizedString) -> String {
+pub(crate) fn loc(s: &wow_dbc::ExtendedLocalizedString) -> String {
     if !s.en_gb.is_empty() {
         return s.en_gb.clone();
     }

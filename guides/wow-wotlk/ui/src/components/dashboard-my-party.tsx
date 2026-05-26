@@ -4,12 +4,14 @@ import {
   UserCircleIcon,
   UsersThreeIcon,
 } from "@phosphor-icons/react"
+import { toast } from "sonner"
 
 import {
   AddToPartyWizard,
   type AddToPartySelection,
 } from "@/components/add-to-party-wizard"
 import { useServerState } from "@/components/server-state-context"
+import { isTauri, trackedInvoke } from "@/lib/tauri"
 import {
   CLASS_COLOR_HEX,
   CLASS_COLORS,
@@ -39,10 +41,36 @@ export function DashboardMyParty() {
   const { selectedCharacter, installComplete } = useServerState()
   const [wizardOpen, setWizardOpen] = React.useState(false)
 
-  // Phase 2d hands the chosen selection to a placeholder console.log
-  // until Phase 2e wires the `add_bot_to_party` Tauri command.
-  const handleConfirm = (selection: AddToPartySelection) => {
-    console.log("[my-party] add-to-party selection", selection)
+  // The wizard's onConfirm currently can't actually spawn a bot —
+  // Phase 2e wires `add_bot_to_party`. What we CAN do today: catch
+  // the "character isn't online" case before the user expects a bot
+  // to materialize, and acknowledge the click either way.
+  const handleConfirm = async (selection: AddToPartySelection) => {
+    const guid = selectedCharacter?.guid
+    if (!guid || !isTauri()) {
+      toast.error("No character selected — pick one from the sidebar first.")
+      return
+    }
+    let online = false
+    try {
+      online = await trackedInvoke<boolean>("is_character_online", { guid })
+    } catch (e) {
+      toast.error("Couldn't reach the database", {
+        description: typeof e === "string" ? e : String(e),
+      })
+      return
+    }
+    if (!online) {
+      toast.warning(`${selectedCharacter?.name ?? "Your character"} isn't logged in`, {
+        description:
+          "Log into the game first — adding a bot summons it to your character's position and invites it to your party, both of which need you in-world.",
+      })
+      return
+    }
+    // Phase 2e: invoke add_bot_to_party with `selection` here.
+    toast.success("Selection captured", {
+      description: `${selection.role} · ${selection.spec.specName} · Lv ${selection.targetLevel} (Lv ${selection.build.level} build) — backend wiring lands in Phase 2e; the bot won't actually spawn yet.`,
+    })
   }
 
   return (

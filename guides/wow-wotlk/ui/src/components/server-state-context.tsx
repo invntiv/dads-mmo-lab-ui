@@ -241,8 +241,18 @@ export type ActivePage =
   | "teleport"
   | "inventory"
   | "playerbots"
+  | "botDetail"
   | "settings"
   | "help"
+
+/** The bot the Bot Detail page is currently rendering. Set by the
+ *  click handlers on the Player Bots list + (eventually) My Party
+ *  slots. Cleared when the user navigates away. */
+export interface SelectedBot {
+  guid: number
+  classId: number
+  name: string
+}
 
 type ServerState = {
   // Detection
@@ -287,6 +297,11 @@ type ServerState = {
   // Page routing
   activePage: ActivePage
   setActivePage: (page: ActivePage) => void
+  /** Bot the Bot Detail page is currently rendering. Set by click
+   *  handlers on the Player Bots list / My Party slots; cleared
+   *  automatically when the user navigates away. */
+  selectedBot: SelectedBot | null
+  openBotDetail: (bot: SelectedBot) => void
 
   // Modules
   installedModules: InstalledModule[]
@@ -555,6 +570,18 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
 
   // ── Page routing + modules state ──────────────────────────────────────
   const [activePage, setActivePage] = React.useState<ActivePage>("dashboard")
+  const [selectedBot, setSelectedBot] = React.useState<SelectedBot | null>(null)
+  const openBotDetail = React.useCallback((bot: SelectedBot) => {
+    setSelectedBot(bot)
+    setActivePage("botDetail")
+  }, [])
+  // Clear the selected-bot record whenever the user leaves the bot
+  // detail page, so a stale guid never lingers behind a router swap.
+  React.useEffect(() => {
+    if (activePage !== "botDetail") {
+      setSelectedBot(null)
+    }
+  }, [activePage])
   const [installedModules, setInstalledModules] = React.useState<
     InstalledModule[]
   >([])
@@ -1169,6 +1196,8 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       resetServerAction,
       activePage,
       setActivePage,
+      selectedBot,
+      openBotDetail,
       installedModules,
       refreshInstalledModules,
       ahbotNeedsConfig,
@@ -1207,6 +1236,8 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       restartServer,
       resetServerAction,
       activePage,
+      selectedBot,
+      openBotDetail,
       installedModules,
       refreshInstalledModules,
       ahbotNeedsConfig,

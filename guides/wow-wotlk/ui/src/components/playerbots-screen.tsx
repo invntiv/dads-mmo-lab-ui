@@ -151,7 +151,7 @@ const ROLE_OPTIONS: { value: "any" | Role; label: string }[] = [
 const POPOVER_AUTO_CLOSE_MS = 4000
 
 export function PlayerbotsScreen() {
-  const { selectedCharacter, worldserverStatus } = useServerState()
+  const { selectedCharacter, worldserverStatus, openBotDetail } = useServerState()
   // SOAP-backed actions need the worldserver responding on :7878. Browsing
   // works without it (DB container is enough), so we keep the list usable
   // and just gate per-action with a clear reason in the popover.
@@ -499,6 +499,14 @@ export function PlayerbotsScreen() {
                         })
                       )
                     }}
+                    onInspect={() => {
+                      setOpenBotGuid(null)
+                      openBotDetail({
+                        guid: bot.guid,
+                        classId: bot.class,
+                        name: bot.name,
+                      })
+                    }}
                   />
                 ))}
               </div>
@@ -624,6 +632,7 @@ function BotTileWithMenu({
   onSetLevel,
   onReroll,
   onSummon,
+  onInspect,
 }: {
   bot: Playerbot
   open: boolean
@@ -637,6 +646,7 @@ function BotTileWithMenu({
   onSetLevel: () => void
   onReroll: () => void
   onSummon: () => void
+  onInspect: () => void
 }) {
   // Auto-close timer — restart whenever the user enters either the
   // card or the popover, expire after 4s of no hover on either.
@@ -770,6 +780,12 @@ function BotTileWithMenu({
           </div>
         )}
         <div className="space-y-0.5">
+          <ActionButton
+            icon={<MagnifyingGlassIcon className="size-4" />}
+            label="View details"
+            onClick={onInspect}
+            tooltip="Open the bot's gear + talents detail page"
+          />
           <ActionButton
             icon={<ChartBarIcon className="size-4" />}
             label="Set level"
@@ -954,10 +970,17 @@ type BuildDatasetResult = {
   partialDecodes: string[]
 }
 
+type BuildTreesResult = {
+  classCount: number
+  talentCount: number
+  outputPath: string
+}
+
 function BotSettingsTab() {
   return (
     <div className="space-y-6 pr-1 pb-6">
       <DatasetPanel />
+      <TreeDatasetPanel />
       <ComingSoonStub
         icon={<UsersThreeIcon className="size-5" />}
         title="Bot chatter"
@@ -1074,6 +1097,91 @@ function DatasetResultPanel({ result }: { result: BuildDatasetResult }) {
           talent in each couldn't be resolved against the talent cache.
           Usually means the cache is from a different patch than the
           conf. Re-run Settings → Talents → Extract.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TreeDatasetPanel() {
+  const [result, setResult] = React.useState<BuildTreesResult | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [busy, setBusy] = React.useState(false)
+
+  const run = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await trackedInvoke<BuildTreesResult>("build_talent_trees")
+      setResult(r)
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e))
+      setResult(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <TreeStructureIcon className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+        <div className="flex-1 space-y-1">
+          <div className="text-sm font-semibold leading-tight">
+            Talent tree layouts
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Reads Talent.dbc / TalentTab.dbc / Spell.dbc / SpellIcon.dbc
+            from your connected WoW client and emits a static per-class
+            tree layout (name, icon, position, prereqs, rank ladder)
+            committed to{" "}
+            <span className="font-mono">src/lib/talent-trees.json</span>.
+            Powers the in-app talent tree views for player + bot detail.
+            Re-run only after a client patch update.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button onClick={run} disabled={busy} size="sm">
+          {busy ? (
+            <>
+              <ArrowClockwiseIcon className="size-3.5 animate-spin" />
+              Building…
+            </>
+          ) : (
+            <>
+              <MagicWandIcon className="size-3.5" />
+              {result ? "Rebuild trees" : "Build talent trees"}
+            </>
+          )}
+        </Button>
+      </div>
+      {error && (
+        <div className="rounded-md border border-rose-500/30 bg-rose-500/5 p-3 text-xs text-rose-700 dark:text-rose-400">
+          <div className="flex items-start gap-2">
+            <WarningCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        </div>
+      )}
+      {result && (
+        <div className="space-y-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+          <div className="flex items-start gap-2">
+            <CheckCircleIcon className="mt-0.5 size-4 shrink-0" />
+            <div className="flex-1 space-y-1">
+              <div className="font-medium">
+                Built {result.talentCount} talents across{" "}
+                {result.classCount} classes.
+              </div>
+              <div className="font-mono text-[10px] text-emerald-700/70 dark:text-emerald-400/70">
+                output: {result.outputPath}
+              </div>
+              <div className="text-[11px] text-emerald-700/80 dark:text-emerald-400/80">
+                Commit the output file with your next change so released
+                builds include it.
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

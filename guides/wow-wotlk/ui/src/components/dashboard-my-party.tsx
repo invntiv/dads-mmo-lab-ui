@@ -5,6 +5,7 @@ import {
   PaperPlaneTiltIcon,
   PlugIcon,
   PlusIcon,
+  StarIcon,
   UserCircleIcon,
   UserMinusIcon,
   UsersThreeIcon,
@@ -16,6 +17,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { useFavoriteBots } from "@/lib/favorite-bots"
+import { specName } from "@/lib/wow-spec-roles"
 
 import {
   AddToPartyWizard,
@@ -59,6 +62,10 @@ interface PartyMember {
   level: number
   online: boolean
   isLeader: boolean
+  /** Primary spec tab (0/1/2). Null if no talents. */
+  specTabIndex?: number | null
+  /** Total talent points per tab. Null when specTabIndex is null. */
+  talentDistribution?: [number, number, number] | null
 }
 
 export function DashboardMyParty() {
@@ -187,7 +194,10 @@ export function DashboardMyParty() {
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-4 px-4 pt-3 pb-6 lg:px-6">
+    // mx-auto max-w-3xl mirrors the player view's paperdoll card —
+    // switching between Player View and My Party keeps the content
+    // column the same width so nothing visually shifts.
+    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 pt-3 pb-6 lg:px-6">
       <UserPartyHeader character={selectedCharacter} installed={installComplete} />
       <div className="space-y-2">
         {Array.from({ length: PARTY_SLOTS }, (_, i) => {
@@ -318,6 +328,8 @@ function FilledPartySlot({
   onRefresh: () => void
 }) {
   const { openBotDetail } = useServerState()
+  const favoriteBots = useFavoriteBots()
+  const isFavorite = favoriteBots.isFavorite(bot.guid)
   const [open, setOpen] = React.useState(false)
   // Two-view popover: "main" lists the action set; "bring-online"
   // is the disambiguation submenu shown when bringing this bot back
@@ -336,6 +348,10 @@ function FilledPartySlot({
   const classColor = CLASS_COLORS[bot.classId] ?? "text-foreground"
   const ringColor = CLASS_COLOR_HEX[bot.classId] ?? "#888"
   const iconName = CLASS_ICON_NAMES[bot.classId]
+  // Line 2 prefers the spec + distribution (e.g. "Frost (0/19/52)").
+  // Falls back to the class name when the bot has no talents (low-
+  // level or fresh from the pool).
+  const specShort = specName(bot.classId, bot.specTabIndex ?? null, true)
 
   const runKick = async () => {
     setOpen(false)
@@ -460,7 +476,25 @@ function FilledPartySlot({
               <span className="text-sm text-muted-foreground"> · {raceName}</span>
             </div>
             <div className="truncate text-sm leading-tight text-muted-foreground">
-              Lv {bot.level} · {shortClass}
+              Lv {bot.level}
+              {specShort ? (
+                <>
+                  {" · "}
+                  <span className="font-medium text-foreground/80">
+                    {specShort}
+                  </span>
+                  {bot.talentDistribution && (
+                    <span className="font-mono text-xs">
+                      {" "}({bot.talentDistribution.join("/")})
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  {" · "}
+                  {shortClass}
+                </>
+              )}
             </div>
           </div>
           {!bot.online && (
@@ -494,6 +528,19 @@ function FilledPartySlot({
           </div>
         ) : (
           <div className="space-y-0.5">
+            <PartySlotAction
+              icon={
+                <StarIcon
+                  className="size-4"
+                  weight={isFavorite ? "fill" : "regular"}
+                />
+              }
+              label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+              onClick={() => {
+                setOpen(false)
+                favoriteBots.toggle(bot.guid)
+              }}
+            />
             <PartySlotAction
               icon={<MagnifyingGlassIcon className="size-4" />}
               label="View details"

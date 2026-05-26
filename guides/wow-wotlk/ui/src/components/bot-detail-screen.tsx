@@ -13,7 +13,9 @@ import {
 import { TalentTree } from "@/components/talent-tree"
 import { useServerState } from "@/components/server-state-context"
 import { Button } from "@/components/ui/button"
+import { getClassTrees } from "@/lib/talent-trees"
 import { isTauri, trackedInvoke } from "@/lib/tauri"
+import { specName } from "@/lib/wow-spec-roles"
 import {
   CLASS_COLOR_HEX,
   CLASS_COLORS,
@@ -91,9 +93,51 @@ export function BotDetailScreen() {
   const botLevel = paperdoll?.level ?? 0
   const totalPointsAvailable = Math.max(0, botLevel - 9)
 
+  // Compute the talent distribution from the points map by walking
+  // the static talent tree layout. Each (talent → rank) entry adds
+  // `rank` points to its tab. Returns null if no points spent yet,
+  // which falls back to displaying just the class name.
+  const distribution = React.useMemo<[number, number, number] | null>(() => {
+    const trees = getClassTrees(classId)
+    if (!trees) return null
+    const dist: [number, number, number] = [0, 0, 0]
+    for (const tab of trees.tabs) {
+      for (const t of tab.talents) {
+        const rank = points[t.id] ?? 0
+        if (tab.tabIndex >= 0 && tab.tabIndex < 3) {
+          dist[tab.tabIndex] += rank
+        }
+      }
+    }
+    return dist[0] + dist[1] + dist[2] > 0 ? dist : null
+  }, [classId, points])
+  const specTabIndex = distribution
+    ? (distribution.indexOf(Math.max(...distribution)) as 0 | 1 | 2)
+    : null
+
   return (
-    <div className="flex flex-1 flex-col gap-3 p-4">
-      <BotHeader bot={selectedBot} level={botLevel} onBack={() => setActivePage("playerbots")} />
+    // mx-auto max-w-3xl matches the Player View paperdoll card width
+    // so flipping between the player and a bot keeps the content
+    // column visually fixed.
+    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3 p-4">
+      {/* Back button OUTSIDE the header card so the card row is just
+          identity (icon + name + spec) without the navigation cue
+          competing for the eye. */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setActivePage("playerbots")}
+        className="self-start"
+      >
+        <ArrowLeftIcon className="size-4" />
+        Back
+      </Button>
+      <BotHeader
+        bot={selectedBot}
+        level={botLevel}
+        distribution={distribution}
+        specTabIndex={specTabIndex}
+      />
       <BotDetailTabs active={tab} onChange={setTab} />
       {error && (
         <div className="rounded-md border border-rose-500/30 bg-rose-500/5 p-3 text-xs text-rose-700 dark:text-rose-400">
@@ -116,22 +160,21 @@ export function BotDetailScreen() {
 function BotHeader({
   bot,
   level,
-  onBack,
+  distribution,
+  specTabIndex,
 }: {
   bot: { guid: number; classId: number; name: string }
   level: number
-  onBack: () => void
+  distribution: [number, number, number] | null
+  specTabIndex: 0 | 1 | 2 | null
 }) {
   const className = CLASS_NAMES[bot.classId] ?? `Class ${bot.classId}`
   const classColor = CLASS_COLORS[bot.classId] ?? "text-foreground"
   const ringColor = CLASS_COLOR_HEX[bot.classId] ?? "#888"
   const iconName = CLASS_ICON_NAMES[bot.classId]
+  const specShort = specName(bot.classId, specTabIndex, true)
   return (
     <div className="flex items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4">
-      <Button variant="outline" size="sm" onClick={onBack} className="shrink-0">
-        <ArrowLeftIcon className="size-4" />
-        Back
-      </Button>
       <div
         className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted"
         style={{ borderColor: ringColor }}
@@ -153,7 +196,16 @@ function BotHeader({
         </div>
         <div className="truncate text-xs leading-tight text-muted-foreground">
           {level > 0 ? `Lv ${level} · ` : ""}
-          {className}
+          {specShort && distribution ? (
+            <>
+              <span className="font-medium text-foreground/80">{specShort}</span>
+              <span className="font-mono">
+                {" "}({distribution.join("/")})
+              </span>
+            </>
+          ) : (
+            className
+          )}
         </div>
       </div>
     </div>

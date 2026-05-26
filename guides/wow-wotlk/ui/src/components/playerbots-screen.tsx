@@ -10,6 +10,7 @@ import {
   MapPinIcon,
   PaperPlaneTiltIcon,
   RobotIcon,
+  StarIcon,
   TreeStructureIcon,
   UserMinusIcon,
   UsersThreeIcon,
@@ -61,6 +62,7 @@ import {
 } from "@/lib/wow-spec-roles"
 import { zoneName } from "@/lib/wow-zone-names"
 import { useServerState } from "@/components/server-state-context"
+import { useFavoriteBots } from "@/lib/favorite-bots"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
@@ -113,11 +115,21 @@ type Playerbot = {
    *  null/undefined when the bot has no talents or the talent cache
    *  hasn't been extracted yet. */
   specTabIndex?: number | null
+  /** Total talent points per tab. Same null/undefined semantics as
+   *  specTabIndex. Used for the "Lv 80 · Unholy (0/19/52)" line on
+   *  bot cards. */
+  talentDistribution?: [number, number, number] | null
 }
 
-type TabId = "world" | "pool" | "settings"
+type TabId = "favorites" | "world" | "pool" | "settings"
 
 const TABS: { id: TabId; label: string; description: string }[] = [
+  {
+    id: "favorites",
+    label: "Favorites",
+    description:
+      "Bots you've starred for quick access. Add favorites from any bot card's popover.",
+  },
   {
     id: "world",
     label: "In the world",
@@ -182,7 +194,10 @@ export function PlayerbotsScreen() {
   const [loading, setLoading] = React.useState(false)
   const [loadError, setLoadError] = React.useState<string | null>(null)
 
+  // Default to "In the World" per UX call — Favorites is the first
+  // tab visually but a fresh page-open should show all live bots.
   const [activeTab, setActiveTab] = React.useState<TabId>("world")
+  const favoriteBots = useFavoriteBots()
   const [search, setSearch] = React.useState("")
   const [roleFilter, setRoleFilter] = React.useState<"any" | Role>("any")
   const [classFilter, setClassFilter] = React.useState("0")
@@ -256,19 +271,23 @@ export function PlayerbotsScreen() {
   }, [refresh])
 
   /** Which online-state the active tab is filtering for. null on
-   *  Settings (no bot list rendered). */
+   *  Settings or Favorites (those tabs don't filter by online). */
   const wantsOnline: boolean | null =
     activeTab === "world" ? true : activeTab === "pool" ? false : null
 
   const filtered = React.useMemo(() => {
-    if (wantsOnline == null) return []
+    if (activeTab === "settings") return []
     const q = search.trim().toLowerCase()
     const cls = parseInt(classFilter, 10)
     const specTab = specFilter === "any" ? null : parseInt(specFilter, 10)
     const lvlOpt = LEVEL_OPTIONS.find((o) => o.value === levelFilter)
     const userZone = selectedCharacter?.zone
     return bots.filter((b) => {
-      if (b.online !== wantsOnline) return false
+      if (activeTab === "favorites") {
+        if (!favoriteBots.isFavorite(b.guid)) return false
+      } else if (wantsOnline !== null && b.online !== wantsOnline) {
+        return false
+      }
       if (q && !b.name.toLowerCase().includes(q)) return false
       if (cls !== 0 && b.class !== cls) return false
       if (specTab != null && b.specTabIndex !== specTab) return false
@@ -291,6 +310,7 @@ export function PlayerbotsScreen() {
     })
   }, [
     bots,
+    activeTab,
     wantsOnline,
     search,
     roleFilter,
@@ -299,6 +319,7 @@ export function PlayerbotsScreen() {
     levelFilter,
     inYourZone,
     selectedCharacter,
+    favoriteBots,
   ])
 
   // Lazy render — same pattern as TeleportScreen.
@@ -323,9 +344,11 @@ export function PlayerbotsScreen() {
 
   const tabMeta = TABS.find((t) => t.id === activeTab)!
   const totalForTab =
-    wantsOnline == null
-      ? 0
-      : bots.filter((b) => b.online === wantsOnline).length
+    activeTab === "favorites"
+      ? bots.filter((b) => favoriteBots.isFavorite(b.guid)).length
+      : wantsOnline == null
+        ? 0
+        : bots.filter((b) => b.online === wantsOnline).length
 
   const runAction = async (
     label: string,
@@ -377,7 +400,7 @@ export function PlayerbotsScreen() {
         <BotTypeTabs
           active={activeTab}
           onChange={setActiveTab}
-          counts={countByType(bots)}
+          counts={countByType(bots, favoriteBots.favorites)}
         />
 
         <p className="text-xs text-muted-foreground">{tabMeta.description}</p>
@@ -514,24 +537,11 @@ export function PlayerbotsScreen() {
             />
           ) : (
             <>
-              <div
-                className={cn(
-                  // In-the-world tab keeps the existing 3-up tile grid
-                  // since location info is meaningful and worth visual
-                  // space. Bot pool tab switches to a single-column
-                  // list — offline bots have no zone, so dense rows
-                  // serve the "scan a long list of names" use case
-                  // better.
-                  activeTab === "pool"
-                    ? "flex flex-col gap-1.5"
-                    : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-                )}
-              >
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {paged.map((bot) => (
                   <BotTileWithMenu
                     key={bot.guid}
                     bot={bot}
-                    compact={activeTab === "pool"}
                     open={openBotGuid === bot.guid}
                     onOpenChange={(o) =>
                       setOpenBotGuid(o ? bot.guid : null)
@@ -563,6 +573,8 @@ export function PlayerbotsScreen() {
                       })
                     }}
                     isInParty={partyGuids.has(bot.guid)}
+                    isFavorite={favoriteBots.isFavorite(bot.guid)}
+                    onToggleFavorite={() => favoriteBots.toggle(bot.guid)}
                     onInviteToParty={() => {
                       if (!selectedCharacter) return
                       void runAction(
@@ -616,14 +628,19 @@ export function PlayerbotsScreen() {
   )
 }
 
-function countByType(bots: Playerbot[]): Record<TabId, number | null> {
+function countByType(
+  bots: Playerbot[],
+  favoriteGuids: Set<number>
+): Record<TabId, number | null> {
   let world = 0
   let pool = 0
+  let favorites = 0
   for (const b of bots) {
     if (b.online) world++
     else pool++
+    if (favoriteGuids.has(b.guid)) favorites++
   }
-  return { world, pool, settings: null }
+  return { favorites, world, pool, settings: null }
 }
 
 function BotTypeTabs({
@@ -639,11 +656,13 @@ function BotTypeTabs({
     <div className="flex flex-wrap gap-1.5 rounded-md border border-border bg-muted/30 p-1">
       {TABS.map((t) => {
         const Icon =
-          t.id === "world"
-            ? RobotIcon
-            : t.id === "pool"
-              ? UsersThreeIcon
-              : GearSixIcon
+          t.id === "favorites"
+            ? StarIcon
+            : t.id === "world"
+              ? RobotIcon
+              : t.id === "pool"
+                ? UsersThreeIcon
+                : GearSixIcon
         const count = counts[t.id]
         return (
           <button
@@ -685,7 +704,8 @@ function BotTileWithMenu({
   serverRunning,
   hasCharacter,
   isInParty,
-  compact = false,
+  isFavorite,
+  onToggleFavorite,
   onSetLevel,
   onSummon,
   onInspect,
@@ -704,9 +724,10 @@ function BotTileWithMenu({
   /** True when this bot is currently a member of the user's group.
    *  Swaps the primary popover action between Add-to-Party / Kick. */
   isInParty: boolean
-  /** Compact single-row layout. Used on the Bot Pool tab where bots
-   *  have no live zone info worth a 3-line tile. */
-  compact?: boolean
+  /** True when this bot is in the user's favorites list. Drives the
+   *  star icon + Add/Remove label swap in the popover. */
+  isFavorite: boolean
+  onToggleFavorite: () => void
   onSetLevel: () => void
   onSummon: () => void
   onInspect: () => void
@@ -761,18 +782,12 @@ function BotTileWithMenu({
             // without touching content size. gap-3 restored so the
             // icon-to-text gap is the same as before; the OTHER gap
             // (card-edge to icon) is what shrank.
-            "group flex w-full items-center rounded-md border border-border bg-card text-left transition-colors hover:border-primary/40",
-            compact
-              ? "gap-2.5 py-1.5 pl-2 pr-3"
-              : "gap-3 py-3 pl-3 pr-4",
+            "group flex w-full items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4 text-left transition-colors hover:border-primary/40",
             open && "border-primary/60 ring-1 ring-primary/30"
           )}
         >
           <div
-            className={cn(
-              "flex shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted",
-              compact ? "size-9" : "size-14"
-            )}
+            className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted"
             style={{ borderColor: ringColor }}
           >
             {iconName ? (
@@ -787,55 +802,42 @@ function BotTileWithMenu({
             )}
           </div>
           {/* space-y-0.5 + leading-tight on every line keeps the three
-              lines visually consistent — line 1's text-base was
-              previously inflating that gap because line 2/3 used
-              default 1.5 leading. */}
+              lines visually consistent. */}
           <div className="min-w-0 flex-1 space-y-0.5">
-            {/* Line 1 — identity: name in the class-color, race
-                rendered in the same muted style as lines 2/3 so only
-                the name draws the eye. */}
+            {/* Line 1 — identity: name in class color + race muted. */}
             <div className="truncate leading-tight" title={`${bot.name} · ${raceName}`}>
-              <span
-                className={cn(
-                  "font-semibold",
-                  classColor,
-                  compact ? "text-sm" : "text-base"
-                )}
-              >
+              <span className={cn("text-base font-semibold", classColor)}>
                 {bot.name}
               </span>
-              <span
-                className={cn(
-                  "text-muted-foreground",
-                  compact ? "text-xs" : "text-sm"
-                )}
-              >
-                {" "}· {raceName}
-              </span>
+              <span className="text-sm text-muted-foreground"> · {raceName}</span>
             </div>
-            {/* Line 2 — combat profile: Lv N · Spec · Class. Spec is
-                hidden when unknown rather than showing "—" so low-
-                level pool bots without talents read cleanly. */}
-            <div
-              className={cn(
-                "truncate leading-tight text-muted-foreground",
-                compact ? "text-xs" : "text-sm"
-              )}
-            >
+            {/* Line 2 — combat profile. We already convey class via
+                the colored name + class crest, so we drop the class
+                name and use the freed space for the talent
+                distribution: "Lv 80 · Unholy (0/19/52)". When the
+                bot has no talents yet, fall back to the short class
+                name so the line still anchors visually. */}
+            <div className="truncate text-sm leading-tight text-muted-foreground">
               Lv {bot.level}
-              {spec && (
+              {spec ? (
                 <>
                   {" · "}
                   <span className="font-medium text-foreground/80">{spec}</span>
+                  {bot.talentDistribution && (
+                    <span className="font-mono text-xs">
+                      {" "}({bot.talentDistribution.join("/")})
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  {" · "}
+                  {shortClassName}
                 </>
               )}
-              {" · "}
-              {shortClassName}
             </div>
-            {/* Line 3 — location: Map · Zone. Skipped in compact mode
-                since offline pool bots have no live location (the
-                stored zone is wherever they were last). */}
-            {!compact && (mapLabel || zoneLabel) && (
+            {/* Line 3 — location: Map · Zone. */}
+            {(mapLabel || zoneLabel) && (
               <div className="truncate text-xs leading-tight text-muted-foreground">
                 {mapLabel}
                 {zoneLabel && (
@@ -870,6 +872,17 @@ function BotTileWithMenu({
           </div>
         )}
         <div className="space-y-0.5">
+          <ActionButton
+            icon={
+              <StarIcon
+                className="size-4"
+                weight={isFavorite ? "fill" : "regular"}
+              />
+            }
+            label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            onClick={onToggleFavorite}
+            tooltip="Favorites appear in the leftmost tab for quick access"
+          />
           <ActionButton
             icon={<MagnifyingGlassIcon className="size-4" />}
             label="View details"

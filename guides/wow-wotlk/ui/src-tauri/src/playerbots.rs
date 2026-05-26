@@ -55,6 +55,10 @@ pub struct PlayerbotSummary {
     /// cache hasn't been extracted, or the inference failed. The
     /// frontend resolves to a display name via SPEC_NAMES[class][tab].
     pub spec_tab_index: Option<u8>,
+    /// Total talent ranks spent in each tab (0/1/2). Sum across the
+    /// array is the bot's total talent points used. `None` mirrors
+    /// `spec_tab_index` — present when we managed to classify talents.
+    pub talent_distribution: Option<[u32; 3]>,
 }
 
 #[tauri::command]
@@ -139,20 +143,24 @@ pub fn list_playerbots() -> Result<Vec<PlayerbotSummary>, String> {
             online,
             bot_type,
             spec_tab_index: None,
+            talent_distribution: None,
         });
     }
 
-    // Enrich with spec inference. The talent cache is built from
-    // Talent.dbc + TalentTab.dbc and maps spell_id → tab_index (0/1/2
-    // within the class). For each bot we count how many of their
-    // character_talent rows fall into each tab; the tab with the most
-    // points is their primary spec. Missing cache or missing talents
-    // both gracefully leave spec_tab_index at None.
+    // Enrich with spec inference + per-tab point counts. The talent
+    // cache maps spell_id → (tab_index, rank). Each `character_talent.spell`
+    // row stores the final-rank spell id for one talent; we look up
+    // (tab, rank) and sum rank+1 per tab to get total points spent.
+    //
+    // `talent_distribution` is the X/Y/Z numbers the UI surfaces on
+    // bot cards; `spec_tab_index` is the tab with the most points
+    // (i.e. argmax of distribution). Missing cache or missing talents
+    // leaves both fields at None.
     if let Ok(cache) = crate::client_assets::load_talent_data() {
-        let spell_to_tab: HashMap<i32, u8> = cache
+        let spell_to_tab_rank: HashMap<i32, (u8, u8)> = cache
             .spell_to_talent
             .iter()
-            .filter_map(|(k, v)| k.parse::<i32>().ok().map(|sid| (sid, v.tab_index)))
+            .filter_map(|(k, v)| k.parse::<i32>().ok().map(|sid| (sid, (v.tab_index, v.rank))))
             .collect();
 
         // One query for every bot's talents — joining via the same
@@ -193,10 +201,12 @@ pub fn list_playerbots() -> Result<Vec<PlayerbotSummary>, String> {
                     let Some(spell) = parts[1].trim().parse::<i32>().ok() else {
                         continue;
                     };
-                    if let Some(&tab) = spell_to_tab.get(&spell) {
+                    if let Some(&(tab, rank)) = spell_to_tab_rank.get(&spell) {
                         let entry = counts.entry(guid).or_insert([0; 3]);
                         if (tab as usize) < entry.len() {
-                            entry[tab as usize] += 1;
+                            // rank is 0-indexed; rank=4 means 5 points
+                            // spent on this talent (1st through 5th).
+                            entry[tab as usize] += (rank as u32) + 1;
                         }
                     }
                 }
@@ -210,6 +220,7 @@ pub fn list_playerbots() -> Result<Vec<PlayerbotSummary>, String> {
                             .unwrap_or((0, &0));
                         if max_val > 0 {
                             row.spec_tab_index = Some(max_idx as u8);
+                            row.talent_distribution = Some(*c);
                         }
                     }
                 }
@@ -482,6 +493,10 @@ pub struct PartyMember {
     /// True for the group leader (the user's own character). The UI
     /// uses this to identify which row to render as "You".
     pub is_leader: bool,
+    /// Primary spec tab (0/1/2). None if the member has no talents.
+    pub spec_tab_index: Option<u8>,
+    /// Total talent points per tab. None mirrors `spec_tab_index`.
+    pub talent_distribution: Option<[u32; 3]>,
 }
 
 /// All members of the group the given character is in, including the
@@ -566,7 +581,71 @@ pub fn get_user_party(player_guid: u64) -> Result<Vec<PartyMember>, String> {
             level: parts[4].trim().parse().unwrap_or(0),
             online: parts[5].trim() == "1",
             is_leader: parts[6].trim() == "1",
+            spec_tab_index: None,
+            talent_distribution: None,
         });
+    }
+
+    // Enrich each member with per-tab talent point counts. Same logic
+    // as list_playerbots — load the talent cache (spell_id → (tab,
+    // rank)) and sum rank+1 per tab over each member's
+    // character_talent rows.
+    if !members.is_empty() {
+        if let Ok(cache) = crate::client_assets::load_talent_data() {
+            let spell_to_tab_rank: std::collections::HashMap<i32, (u8, u8)> = cache
+                .spell_to_talent
+                .iter()
+                .filter_map(|(k, v)| k.parse::<i32>().ok().map(|sid| (sid, (v.tab_index, v.rank))))
+                .collect();
+            let guid_list = members
+                .iter()
+                .map(|m| m.guid.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let talents_sql = format!(
+                "SELECT guid, spell FROM acore_characters.character_talent WHERE guid IN ({});",
+                guid_list
+            );
+            let tout = std::process::Command::new("docker")
+                .args([
+                    "exec", &container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e",
+                    &talents_sql,
+                ])
+                .output();
+            if let Ok(o) = tout {
+                if o.status.success() {
+                    let mut counts: std::collections::HashMap<u64, [u32; 3]> =
+                        std::collections::HashMap::new();
+                    for line in String::from_utf8_lossy(&o.stdout).lines() {
+                        let p: Vec<&str> = line.split('\t').collect();
+                        if p.len() < 2 {
+                            continue;
+                        }
+                        let Ok(g) = p[0].trim().parse::<u64>() else { continue };
+                        let Ok(spell) = p[1].trim().parse::<i32>() else { continue };
+                        if let Some(&(tab, rank)) = spell_to_tab_rank.get(&spell) {
+                            let entry = counts.entry(g).or_insert([0; 3]);
+                            if (tab as usize) < entry.len() {
+                                entry[tab as usize] += (rank as u32) + 1;
+                            }
+                        }
+                    }
+                    for m in &mut members {
+                        if let Some(c) = counts.get(&m.guid) {
+                            let (max_idx, &max_val) = c
+                                .iter()
+                                .enumerate()
+                                .max_by_key(|(_, &v)| v)
+                                .unwrap_or((0, &0));
+                            if max_val > 0 {
+                                m.spec_tab_index = Some(max_idx as u8);
+                                m.talent_distribution = Some(*c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(members)
 }

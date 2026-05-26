@@ -15,6 +15,8 @@ import {
   SteamLogoIcon,
   SparkleIcon,
   TrashIcon,
+  UploadSimpleIcon,
+  UserCircleIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react"
 import { listen } from "@tauri-apps/api/event"
@@ -23,6 +25,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Slider } from "@/components/ui/slider"
+import { CharacterBackupWizard } from "@/components/character-backup-wizard"
+import { CharacterRestoreWizard } from "@/components/character-restore-wizard"
 import { ControllerSupportSection } from "@/components/controller-support-section"
 import { ModulesEmbedded } from "@/components/modules-screen"
 import { SteamIntegrationSection } from "@/components/steam-integration-section"
@@ -109,6 +113,13 @@ export function SettingsScreen() {
   // Tracks the scroll progress of the sections list below — feeds the
   // gradient bar at the top of the scroll area.
   const scrollRef = React.useRef<HTMLDivElement>(null)
+
+  // Character management — backup + restore wizards. Open state lives
+  // here so the cards in the Character Management section can trigger
+  // them and the wizards mount once at the screen level (avoids
+  // mount/unmount thrash when the user re-opens after a close).
+  const [backupOpen, setBackupOpen] = React.useState(false)
+  const [restoreOpen, setRestoreOpen] = React.useState(false)
 
   const [iconStatus, setIconStatus] = React.useState<IconCacheStatus | null>(
     null
@@ -469,6 +480,31 @@ export function SettingsScreen() {
         <SectionDivider />
 
         <Section
+          icon={<UserCircleIcon className="size-5 text-muted-foreground" />}
+          title="Character Management"
+          subtitle="Back up your characters before a server rebuild or migrate them between installs. Backups are single .dmlbak files (a zip of per-table SQL dumps + a manifest) — portable, easy to validate, easy to restore."
+        >
+          <div className="grid gap-3 lg:grid-cols-2">
+            <CharacterManagementCard
+              icon={<DownloadSimpleIcon className="size-5" />}
+              title="Back up characters"
+              description="Pick a WoW account, choose which of its characters to export, and save the result to a .dmlbak file. Skips bot characters automatically — only real characters are included."
+              actionLabel="Start backup"
+              onAction={() => setBackupOpen(true)}
+            />
+            <CharacterManagementCard
+              icon={<UploadSimpleIcon className="size-5" />}
+              title="Restore characters"
+              description="Load a .dmlbak file, pick which characters to bring back, and assign them to an account on this server. The Lab checks for GUID collisions before writing anything."
+              actionLabel="Start restore"
+              onAction={() => setRestoreOpen(true)}
+            />
+          </div>
+        </Section>
+
+        <SectionDivider />
+
+        <Section
           icon={<SteamLogoIcon className="size-5 text-muted-foreground" />}
           title="Steam Integration"
           subtitle="Add The Lab and your WoW client to Steam as non-Steam games so they show up in Gaming Mode. Steam must be closed first — we rewrite shortcuts.vdf on disk and Steam keeps an in-memory copy while it's running."
@@ -490,6 +526,11 @@ export function SettingsScreen() {
           <ModulesEmbedded />
         </Section>
       </div>
+      {/* Character management wizards live at the screen root so they
+          mount once. Open state above; the cards in the Character
+          Management section flip it. */}
+      <CharacterBackupWizard open={backupOpen} onOpenChange={setBackupOpen} />
+      <CharacterRestoreWizard open={restoreOpen} onOpenChange={setRestoreOpen} />
     </div>
   )
 }
@@ -566,6 +607,41 @@ function AudioSettings() {
           onValueChange={(v) => setVolume(v[0] ?? 0)}
           className="w-full"
         />
+      </div>
+    </div>
+  )
+}
+
+/** Simpler sibling of `EnrichmentCard` for action-only sections that
+ *  don't need status lines, progress bars, or wipe buttons (just
+ *  icon + title + description + primary action). Used by the
+ *  Character Management section. */
+function CharacterManagementCard({
+  icon,
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  icon: React.ReactNode
+  title: string
+  description: string
+  actionLabel: string
+  onAction: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="text-muted-foreground">{icon}</div>
+        <div className="flex-1 space-y-1">
+          <div className="text-sm font-semibold leading-tight">{title}</div>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      <div className="flex justify-end">
+        <Button onClick={onAction} size="sm">
+          {actionLabel}
+        </Button>
       </div>
     </div>
   )

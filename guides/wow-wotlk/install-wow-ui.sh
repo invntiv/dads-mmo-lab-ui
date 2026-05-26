@@ -724,6 +724,13 @@ wait_for_server() {
     print_info "Every start after this one is much faster (no re-import)."
 
     TIMEOUT=1800
+    # If the worldserver container hasn't even APPEARED after 60s, the
+    # user is in a docker-state corner case (containers removed, compose
+    # up failed, etc.) — there's no point polling logs we'll never see.
+    # Earlier versions polled the full 1800s and reported a useless
+    # warning; resume runs hit this when "Stop server" had removed the
+    # containers and no `up -d` brought them back.
+    NO_CONTAINER_TIMEOUT=60
     ELAPSED=0
     READY=0
     WORLD_CONTAINER=""
@@ -743,6 +750,17 @@ wait_for_server() {
                     break
                 fi
             fi
+        fi
+        # Fast-fail when no worldserver container has shown up after
+        # NO_CONTAINER_TIMEOUT — don't burn 1800s polling for something
+        # docker can't possibly produce.
+        if [ -z "$WORLD_CONTAINER" ] && [ $ELAPSED -ge $NO_CONTAINER_TIMEOUT ]; then
+            echo "" # clear the in-place counter line
+            print_error "No worldserver container exists after ${NO_CONTAINER_TIMEOUT}s."
+            print_info  "Looks like containers were removed (e.g. by an earlier 'Stop server')."
+            print_info  "Try: cd '$SERVER_DIR' && docker compose up -d"
+            print_info  "Then re-run the install or click Finish setup again."
+            return 1
         fi
         printf "[..]  server initializing (%ds elapsed)\r" "$ELAPSED"
         sleep 1
@@ -801,9 +819,17 @@ sql_exec() {
 # uppercase hex strings, space-separated. Mirrors AC's
 # SRP6::MakeRegistrationData (src/common/Cryptography/Authentication/SRP6.cpp).
 # Verified against accounts created via AC's own `account create`.
+#
+# `env -u PYTHONHOME -u PYTHONPATH -u PYTHONSTARTUP -u PYTHONNOUSERSITE`
+# strips the env vars that pyenv / conda / Homebrew commonly set —
+# users with one of those on PATH would otherwise see python3 launch
+# but fail to import its own stdlib ("No module named 'encodings'"),
+# blocking the entire admin-account bootstrap. The system python3 on
+# SteamOS / Arch / Ubuntu always works with a clean env.
 srp6_compute() {
     local user="$1" pass="$2"
-    python3 - "$user" "$pass" <<'PYEOF'
+    env -u PYTHONHOME -u PYTHONPATH -u PYTHONSTARTUP -u PYTHONNOUSERSITE \
+        python3 - "$user" "$pass" <<'PYEOF'
 import hashlib, secrets, sys
 # Canonical WoW SRP6 modulus. AC stores it as 32 bytes via
 # HexStrToByteArray(..., reverse=true) then BigNumber(bytes, littleEndian=true)
@@ -990,8 +1016,34 @@ print_info "Admin user:   ${DML_ADMIN_USER:-admin}"
 # spawns this script with DML_RESUME=1.
 if [ "${DML_RESUME:-0}" = "1" ]; then
     print_info "Resume mode — skipping clone/compile, completing post-install setup..."
-    wait_for_server
-    bootstrap_accounts_and_ahbot
+
+    # Bring the stack up before waiting. Resume gets entered when an
+    # earlier install crashed AFTER the docker images existed but BEFORE
+    # bootstrap finished; in between the user may have run "Stop server"
+    # (which is `docker compose down`, removing containers — only the
+    # data volumes survive). Without an explicit `up -d` here,
+    # wait_for_server polls for a worldserver container that no longer
+    # exists and times out at 1800s for nothing. `up -d` is idempotent:
+    # already-running containers stay as-is; missing ones get recreated
+    # from the existing docker-compose.yml against the persisted volumes.
+    if [ -d "$SERVER_DIR" ]; then
+        print_info "Ensuring containers are up before waiting..."
+        (cd "$SERVER_DIR" && docker compose up -d) > /dev/null 2>&1 \
+            || print_warning "docker compose up returned non-zero — wait_for_server will report what's wrong."
+    fi
+
+    if ! wait_for_server; then
+        # Fail-fast happens when containers aren't even up after 60s —
+        # no point trying bootstrap when we have nothing to bootstrap
+        # against. Exit non-zero so the app marks the install incomplete
+        # and the user re-attempts after fixing the docker state.
+        exit 1
+    fi
+    if ! bootstrap_accounts_and_ahbot; then
+        print_error "Bootstrap failed — admin and/or AH Bot accounts were not created."
+        print_info  "install.json is NOT being written so the app will detect this as incomplete and re-offer the Finish-setup flow."
+        exit 1
+    fi
     write_metadata
 else
     check_system
@@ -1006,7 +1058,17 @@ else
         exit 1
     fi
     wait_for_server
-    bootstrap_accounts_and_ahbot
+    # Same gating as the resume branch — write_metadata MUST NOT run if
+    # bootstrap failed. Earlier versions ran them unconditionally, so a
+    # mid-bootstrap crash (e.g. python3 + hostile PYTHONHOME) still
+    # produced install.json and the app mistook a half-broken install
+    # for a complete one. Re-run with DML_RESUME=1 after fixing the
+    # underlying issue.
+    if ! bootstrap_accounts_and_ahbot; then
+        print_error "Bootstrap failed — admin and/or AH Bot accounts were not created."
+        print_info  "install.json is NOT being written so the app will detect this as incomplete and re-offer the Finish-setup flow."
+        exit 1
+    fi
     write_metadata
 fi
 
@@ -1018,10 +1080,7 @@ echo ""
 print_info "Admin account: ${DML_ADMIN_USER:-admin} / ${DML_ADMIN_PASS:-admin}"
 print_info "Auction House Bot is active and will start listing items shortly."
 echo ""
-echo -e "${YELLOW}One last manual step (WoW client side):${NC}"
-echo -e "  Open your WoW 3.3.5a client folder, find ${CYAN}realmlist.wtf${NC}"
-echo -e "  in the ${CYAN}Data/<locale>/${NC} directory, and set its contents to:"
-echo -e "      ${GREEN}set realmlist 127.0.0.1${NC}"
-echo -e "  This tells your WoW client to connect to your local server."
-echo ""
+# Note: realmlist.wtf is patched in-app when the user picks their client
+# directory from the dashboard, so we no longer print the manual step
+# here. The bundled HOWTO docs still describe it for non-Lab workflows.
 exit 0

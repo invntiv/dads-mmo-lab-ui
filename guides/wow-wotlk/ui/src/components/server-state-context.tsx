@@ -663,6 +663,20 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     void refreshServerStatus()
   }, [refreshServerStatus])
 
+  // Re-run install detection whenever the worldserver state changes.
+  // The admin-account check inside `detect_installs` needs the DB
+  // container to be running — it `docker exec`s into mysql to verify
+  // the admin row exists. If the user launches the app with their
+  // server stopped (typical after install crashed mid-bootstrap),
+  // the first detect_installs run can only see install.json and not
+  // the missing admin row, so it falsely marks the install complete
+  // and the Finish-setup banner stays hidden. Re-running on server-
+  // start closes that gap without forcing the user to relaunch the
+  // app. Cheap call (~50ms), runs at most once per state transition.
+  React.useEffect(() => {
+    void refreshInstalls()
+  }, [worldserverStatus, refreshInstalls])
+
   // ── Module + character refreshers ─────────────────────────────────────
   const refreshInstalledModules = React.useCallback(async () => {
     if (!isTauri()) {

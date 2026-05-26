@@ -190,7 +190,27 @@ pub fn detect_installs() -> Result<DetectionResult, String> {
             _ => "unknown",
         }
         .to_string();
-        let complete = path.join(".dads-mmo-lab").join("install.json").exists();
+        // Layered completeness check:
+        //   1. install.json must exist — that's the script's "I finished"
+        //      marker. Without it we definitely treat as incomplete.
+        //   2. If install.json exists AND the worldserver container is
+        //      up, do a fast SELECT against acore_auth.account for the
+        //      admin user recorded in install.json. A missing admin row
+        //      means an earlier install run wrote install.json but the
+        //      bootstrap step (account creation) silently failed — the
+        //      buggy `python3 + hostile PYTHONHOME` path from before the
+        //      fix in install-wow-ui.sh. Mark as incomplete so the UI
+        //      offers "Finish setup" and re-runs bootstrap in resume mode.
+        //   3. If the DB isn't reachable (container down, mysql slow to
+        //      start, etc.) we DON'T flip to incomplete — that would
+        //      false-flag healthy installs whenever the server is off.
+        //      DB-side check defers to `bootstrap_appears_complete`.
+        let marker_exists = path.join(".dads-mmo-lab").join("install.json").exists();
+        let complete = if marker_exists {
+            bootstrap_appears_complete(&path).unwrap_or(true)
+        } else {
+            false
+        };
         installs.push(DetectedInstall {
             path: path.to_string_lossy().into_owned(),
             variant,
@@ -199,6 +219,71 @@ pub fn detect_installs() -> Result<DetectionResult, String> {
     }
 
     Ok(DetectionResult { installs })
+}
+
+/// Verify that the admin account recorded in `install.json` actually
+/// exists in `acore_auth.account`. Returns:
+///   - `Some(true)`  — install.json + admin row both present
+///   - `Some(false)` — install.json says admin=X but the auth DB has
+///                     no row for X (bootstrap step silently failed)
+///   - `None`        — couldn't reach the DB (container down, etc.).
+///                     Caller should NOT treat this as "incomplete";
+///                     fall back to trusting install.json.
+fn bootstrap_appears_complete(root: &Path) -> Option<bool> {
+    let json_path = root.join(".dads-mmo-lab").join("install.json");
+    let json = std::fs::read_to_string(&json_path).ok()?;
+    // Cheap one-field grep — pulling in serde_json::Value just to read
+    // a single string is overkill. install.json has one admin_user line.
+    let admin_user = json
+        .lines()
+        .find_map(|l| {
+            let l = l.trim();
+            let prefix = "\"admin_user\":";
+            if !l.starts_with(prefix) {
+                return None;
+            }
+            let rest = l[prefix.len()..].trim().trim_end_matches(',').trim();
+            let unquoted = rest.trim_matches('"');
+            if unquoted.is_empty() { None } else { Some(unquoted.to_string()) }
+        })?;
+    // "unknown" is what `adopt_install` writes for externally-installed
+    // servers — no real admin account to check, so trust the marker.
+    if admin_user == "unknown" {
+        return Some(true);
+    }
+
+    let container = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .ok()?;
+    if !container.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&container.stdout)
+        .lines()
+        .find(|n| n.to_lowercase().contains("database"))
+        .map(|s| s.to_string())?;
+
+    let safe = admin_user.replace('\'', "''");
+    let sql = format!(
+        "SELECT 1 FROM acore_auth.account WHERE UPPER(username) = UPPER('{}') LIMIT 1;",
+        safe
+    );
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec", &name, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    Some(!line.is_empty())
 }
 
 /// Adopt an externally-installed server — one created by a different but

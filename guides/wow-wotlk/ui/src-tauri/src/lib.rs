@@ -4,6 +4,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 mod app_settings;
 mod bootstrap;
+mod character_backup;
 mod client_assets;
 mod controller;
 mod dashboard;
@@ -122,6 +123,11 @@ pub fn run() {
             playerbots::get_user_party,
             playerbots::kick_bot_from_party,
             playerbots::bring_bot_online,
+            character_backup::lookup_account,
+            character_backup::list_account_characters,
+            character_backup::backup_characters,
+            character_backup::validate_backup,
+            character_backup::restore_characters,
             talent_harvest::harvest_talent_builds,
             talent_dataset::build_talent_dataset,
             talent_trees::build_talent_trees,

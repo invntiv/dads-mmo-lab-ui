@@ -208,7 +208,6 @@ const CHAR_KEYED_TABLES: &[&str] = &[
     "character_achievement",
     "character_achievement_progress",
     "character_action",
-    "character_aura",
     "character_glyphs",
     "character_homebind",
     "character_queststatus",
@@ -229,7 +228,6 @@ const CHAR_KEYED_TABLES: &[&str] = &[
     "character_queststatus_weekly",
     "character_queststatus_monthly",
     "character_queststatus_seasonal",
-    "character_spell_cooldown",
     "character_stats",
     "character_social",
 ];
@@ -371,12 +369,12 @@ pub fn backup_characters(args: BackupArgs) -> Result<BackupResult, String> {
     ])?;
     write_file(&mut zip, &options, "items.sql", &items_dump)?;
 
-    // mail.sql — mail rows where receiver IN (...). We dump both mail
-    // and mail_items so attachments restore correctly. mail_items is
-    // keyed on mail_id; the mail dump's INSERTs will recreate the mail
-    // rows, but mail_items needs its OWN dump filtered through the
-    // mail rows we just captured — easier: filter mail_items by
-    // receiver too via a sub-select.
+    // mail.sql — mail rows and their attachments. mail_items carries
+    // a redundant `receiver` column (denormalized for fast inbox
+    // lookups in AC), so we can filter both tables with the same
+    // predicate in one mysqldump call. Order matters: mail rows must
+    // INSERT before mail_items (mail_items.mail_id references mail.id);
+    // mysqldump emits tables in the order listed on the command line.
     let mail_dump = run_dump(&[
         "exec", &container, "mysqldump",
         "-uroot", "-ppassword",
@@ -387,6 +385,7 @@ pub fn backup_characters(args: BackupArgs) -> Result<BackupResult, String> {
         &format!("--where=receiver IN ({guid_csv})"),
         "acore_characters",
         "mail",
+        "mail_items",
     ])?;
     write_file(&mut zip, &options, "mail.sql", &mail_dump)?;
 
@@ -491,10 +490,37 @@ fn write_file<W: Write + std::io::Seek>(
 
 // ── Restore ────────────────────────────────────────────────────────────
 //
-// Restore checks the manifest, lets the caller pick a subset of
-// characters from the backup, then sources each .sql against the
-// target chardb. GUID-collision detection runs first; on conflict the
-// command errors out (v1 has no guid remapping).
+// Restore lands the backup's data in a TEMPORARY staging schema first,
+// shifts every primary key (and dependent FK column) by a per-domain
+// offset computed from `MAX(target) + 15000`, then INSERTs from stage
+// into the live chardb inside a single transaction. Any failure rolls
+// the target back; the staging schema is dropped on both success and
+// failure. This makes partial restores impossible and lets backups
+// from server A coexist on server B even when their ID ranges overlap.
+//
+// Offset domains (each gets its own MAX-based offset):
+//   * char_guid       — characters.guid + every char_*.guid + various FKs
+//   * item_guid       — item_instance.guid + inventory.item, equipment slots,
+//                       mail_items.item_guid, auctionhouse.itemguid, …
+//   * pet_id          — character_pet.id + pet_aura/spell/cooldown.guid
+//   * mail_id         — mail.id + mail_items.mail_id
+//   * auction_id      — auctionhouse.id
+//
+// Conditional FK shifts (only shift if value ∈ source guid set; otherwise
+// leave alone — pointer would dangle but won't corrupt unrelated data):
+//   character_social.friend, mail.sender, item_instance.creatorGuid /
+//   giftCreatorGuid, auctionhouse.buyguid.
+//
+// NOT shifted: pet_aura.casterGuid — bigint packed ObjectGuid (type bits
+// in the upper portion), not a raw guid; naive addition would corrupt
+// the type encoding. The worldserver tolerates missing aura caster refs.
+//
+// NOT included in backup at all: character_aura, character_spell_cooldown.
+// Both store transient state that's stale by the time a restore runs (a
+// few minutes to ~1 hour for aura durations; minutes-to-hours for spell
+// cooldowns). On a mesh-migration the source server's spell IDs may not
+// even exist on the target. Characters reappear "rested in an inn" — no
+// stale buffs, no nonsensical cooldown timers. Re-buff on login.
 
 /// Open + parse a .dmlbak's manifest without unpacking everything.
 /// The wizard's Step 1 (file picker) calls this immediately to verify
@@ -538,16 +564,37 @@ pub struct RestoreResult {
     pub skipped_due_to_conflict: Vec<u64>,
 }
 
-/// Restore selected characters from a .dmlbak into the target account.
+/// Gap added on top of MAX(target) when computing each PK domain's
+/// remap offset. 15k is comfortably larger than any concurrent burst a
+/// running server could allocate during a restore window — the server
+/// allocates IDs serially during gameplay and a restore completes in
+/// seconds, so the chance of a brand-new ID landing inside the gap is
+/// effectively zero. Bump if proven wrong in production.
+const ID_GAP: u64 = 15_000;
+
+#[derive(Debug, Clone, Copy)]
+struct RestoreOffsets {
+    char_guid: u64,
+    item_guid: u64,
+    pet_id: u64,
+    mail_id: u64,
+    auction_id: u64,
+}
+
+/// Restore characters from a .dmlbak into the target account.
 ///
 /// Sequence:
-///   1. Read manifest + verify it contains all requested guids
-///   2. Check chardb for guid collisions; if any selected guid already
-///      exists in `characters`, abort with a clear list (v1 has no
-///      remap, so user must drop the conflicting chars first)
-///   3. Stream each .sql in archive order through `docker exec mysql`
-///   4. UPDATE characters.account = target_account_id WHERE guid IN (...)
-///      so the imported chars belong to the new owner
+///   1. Parse manifest + verify selected guids are present
+///   2. Compute per-domain offsets from MAX(target.<pk>) + 15000
+///   3. CREATE DATABASE <stage>; CREATE TABLE LIKE for each table
+///   4. Source every .sql in the archive into <stage>
+///   5. Capture source PK sets per domain (used for conditional FK
+///      shifts) BEFORE shifting any IDs
+///   6. UPDATE every PK + dependent FK column in <stage> by its offset
+///   7. INSIDE A TRANSACTION on the target connection: INSERT INTO
+///      acore_characters.<t> SELECT * FROM <stage>.<t> WHERE <filter>,
+///      then rebind characters.account, then COMMIT
+///   8. DROP DATABASE <stage> (always, success or failure)
 #[tauri::command]
 pub fn restore_characters(args: RestoreArgs) -> Result<RestoreResult, String> {
     let container = require_container()?;
@@ -578,25 +625,213 @@ pub fn restore_characters(args: RestoreArgs) -> Result<RestoreResult, String> {
         }
     }
 
-    // Conflict check — any selected guid that already exists in the
-    // target chardb's characters table is a hard stop in v1. Future
-    // versions can offer a "remap to fresh guids" option.
-    let conflicts = check_guid_conflicts(&container, &args.character_guids)?;
-    if !conflicts.is_empty() {
-        return Err(format!(
-            "GUID conflict: the target server already has characters with guid(s) {}. \
-             Delete or rename them first, then retry restore.",
-            conflicts
-                .iter()
-                .map(|g| g.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+    let offsets = compute_offsets(&container)?;
+    let stage = create_stage_db(&container)?;
+
+    // Wrap the body so we can guarantee stage cleanup even on early
+    // return. (Rust has no try/finally; this closure pattern is the
+    // idiomatic equivalent.)
+    let result: Result<RestoreResult, String> = (|| {
+        create_stage_tables(&container, &stage)?;
+        populate_stage(&container, &stage, &mut archive)?;
+        let src_pks = scan_source_pks(&container, &stage)?;
+        apply_shifts(&container, &stage, offsets, &src_pks)?;
+
+        // After shifting, args.character_guids are the SOURCE values;
+        // the rows in stage are at the new (shifted) ids. Compute the
+        // target guids we'll rebind to the new account.
+        let new_char_guids: Vec<u64> = args
+            .character_guids
+            .iter()
+            .map(|g| g + offsets.char_guid)
+            .collect();
+
+        merge_into_target(
+            &container,
+            &stage,
+            args.target_account_id,
+            &new_char_guids,
+        )?;
+        verify_integrity(&container, &new_char_guids)?;
+
+        Ok(RestoreResult {
+            restored_characters: args.character_guids.len(),
+            skipped_due_to_conflict: Vec::new(),
+        })
+    })();
+
+    // Always drop the staging schema. Log the drop result if it fails
+    // but don't override the main result — the user cares about the
+    // restore status, not the cleanup status.
+    if let Err(e) = drop_stage(&container, &stage) {
+        log::warn!("failed to drop stage db {stage}: {e}");
     }
 
-    // Source each .sql file. Order matters only for FK-ish dependencies,
-    // but AC's character tables have no enforced FKs — we just stream
-    // them in archive order. characters.sql usually first.
+    result
+}
+
+/// MAX(target) + ID_GAP per domain. Returns 0 + gap for empty tables.
+fn compute_offsets(container: &str) -> Result<RestoreOffsets, String> {
+    let q = |sql: &str| -> Result<u64, String> {
+        let out = std::process::Command::new("docker")
+            .args([
+                "exec", container, "mysql", "-uroot", "-ppassword",
+                "-N", "-B", "-e", sql,
+            ])
+            .output()
+            .map_err(|e| format!("max query: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "max query failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let raw = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .to_string();
+        // mysql returns "NULL" for MAX of empty table; treat as 0.
+        if raw.is_empty() || raw == "NULL" {
+            Ok(0)
+        } else {
+            raw.parse::<u64>()
+                .map_err(|e| format!("parse max '{raw}': {e}"))
+        }
+    };
+    Ok(RestoreOffsets {
+        char_guid: q("SELECT MAX(guid) FROM acore_characters.characters;")? + ID_GAP,
+        item_guid: q("SELECT MAX(guid) FROM acore_characters.item_instance;")? + ID_GAP,
+        pet_id: q("SELECT MAX(id) FROM acore_characters.character_pet;")? + ID_GAP,
+        mail_id: q("SELECT MAX(id) FROM acore_characters.mail;")? + ID_GAP,
+        auction_id: q("SELECT MAX(id) FROM acore_characters.auctionhouse;")? + ID_GAP,
+    })
+}
+
+/// Tables the restore stage owns. Order is the order we INSERT INTO
+/// the live chardb (FK roots first; AC doesn't enforce FKs but keeping
+/// this order makes the dependency graph readable).
+const RESTORE_TABLE_ORDER: &[&str] = &[
+    // FK roots
+    "characters",
+    "item_instance",
+    "character_pet",
+    "mail",
+    // Tables that reference characters.guid
+    "character_account_data",
+    "character_achievement",
+    "character_achievement_progress",
+    "character_action",
+    "character_glyphs",
+    "character_homebind",
+    "character_queststatus",
+    "character_queststatus_rewarded",
+    "character_queststatus_daily",
+    "character_queststatus_weekly",
+    "character_queststatus_monthly",
+    "character_queststatus_seasonal",
+    "character_reputation",
+    "character_skills",
+    "character_spell",
+    "character_talent",
+    "character_inventory",
+    "character_equipmentsets",
+    "character_arena_stats",
+    "character_banned",
+    "character_battleground_random",
+    "character_brew_of_the_month",
+    "character_entry_point",
+    "character_instance",
+    "character_stats",
+    "character_social",
+    "battleground_deserters",
+    // Tables that reference item_instance.guid / character_pet.id / mail.id
+    "mail_items",
+    "auctionhouse",
+    "pet_aura",
+    "pet_spell",
+    "pet_spell_cooldown",
+];
+
+/// Pick a stage DB name unique enough to survive a clock skew or a
+/// crashed-restore leftover. Process ID + nanos timestamp combined.
+fn stage_db_name() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!("dml_restore_stage_{pid}_{nanos}")
+}
+
+fn create_stage_db(container: &str) -> Result<String, String> {
+    let name = stage_db_name();
+    let sql = format!(
+        "CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    );
+    run_mysql_script(container, "mysql", &sql)
+        .map_err(|e| format!("create stage db {name}: {e}"))?;
+    Ok(name)
+}
+
+fn drop_stage(container: &str, stage: &str) -> Result<(), String> {
+    let sql = format!("DROP DATABASE IF EXISTS `{stage}`;");
+    run_mysql_script(container, "mysql", &sql)
+}
+
+/// For every table we might restore, CREATE TABLE LIKE acore_characters.
+/// Tables that don't exist on target (rare; only if the target server
+/// is on a different AC commit) are skipped silently — sourcing the
+/// dump will land their rows nowhere and downstream INSERTs become
+/// no-ops, which is the safe behavior.
+fn create_stage_tables(container: &str, stage: &str) -> Result<(), String> {
+    // Gather the target's actual table set to skip non-existent ones.
+    let existing = list_chardb_tables(container)?;
+    let mut script = String::new();
+    for t in RESTORE_TABLE_ORDER {
+        if !existing.contains(*t) {
+            log::info!("restore: skipping table {t} (not on target)");
+            continue;
+        }
+        script.push_str(&format!(
+            "CREATE TABLE `{stage}`.`{t}` LIKE acore_characters.`{t}`;\n"
+        ));
+    }
+    if script.is_empty() {
+        return Err("Target chardb has none of the expected tables.".to_string());
+    }
+    run_mysql_script(container, "mysql", &script)
+        .map_err(|e| format!("create stage tables: {e}"))
+}
+
+fn list_chardb_tables(container: &str) -> Result<std::collections::HashSet<String>, String> {
+    let sql = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
+               WHERE TABLE_SCHEMA='acore_characters';";
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec", container, "mysql", "-uroot", "-ppassword",
+            "-N", "-B", "-e", sql,
+        ])
+        .output()
+        .map_err(|e| format!("list tables: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "list tables failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// Source each .sql file in the archive into the stage DB.
+fn populate_stage<R: Read + std::io::Seek>(
+    container: &str,
+    stage: &str,
+    archive: &mut ZipArchive<R>,
+) -> Result<(), String> {
     let sql_names = [
         "characters.sql",
         "pets.sql",
@@ -606,73 +841,342 @@ pub fn restore_characters(args: RestoreArgs) -> Result<RestoreResult, String> {
         "battleground_deserters.sql",
     ];
     for name in sql_names {
-        // Re-read each file — `archive.by_name` borrows mutably, so we
-        // can't hold multiple at once. Cheap on a small zip.
         let mut buf = String::new();
         match archive.by_name(name) {
             Ok(mut e) => {
                 e.read_to_string(&mut buf)
                     .map_err(|err| format!("read {name}: {err}"))?;
             }
-            Err(_) => continue, // optional file, skip
+            Err(_) => continue, // optional file
         };
         if buf.trim().is_empty() {
             continue;
         }
-        run_mysql_script(&container, "acore_characters", &buf)
-            .map_err(|e| format!("sourcing {name}: {e}"))?;
+        // mysqldump emits unqualified table names so we just point
+        // mysql at the stage DB and INSERTs land there.
+        run_mysql_script(container, stage, &buf)
+            .map_err(|e| format!("sourcing {name} into stage: {e}"))?;
     }
+    Ok(())
+}
 
-    // Re-assign characters to the target account. Backups carry their
-    // ORIGINAL account id in `characters.account`, which is wrong on
-    // restore; one UPDATE fixes them all.
-    let guid_csv = args
-        .character_guids
-        .iter()
-        .map(|g| g.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let update_sql = format!(
-        "UPDATE acore_characters.characters SET account = {} WHERE guid IN ({});",
-        args.target_account_id, guid_csv
-    );
-    run_mysql_script(&container, "acore_characters", &update_sql)
-        .map_err(|e| format!("rebind account: {e}"))?;
+/// Source PK sets per domain (read from stage AFTER population, BEFORE
+/// shifting). Used for conditional FK shifts so we only remap values
+/// that actually belong to the migrated chars.
+#[derive(Debug, Default)]
+struct SourcePks {
+    chars: Vec<u64>,
+    items: Vec<u64>,
+    pets: Vec<u64>,
+    mails: Vec<u64>,
+    auctions: Vec<u64>,
+}
 
-    Ok(RestoreResult {
-        restored_characters: args.character_guids.len(),
-        skipped_due_to_conflict: Vec::new(),
+fn scan_source_pks(container: &str, stage: &str) -> Result<SourcePks, String> {
+    let q = |sql: &str| -> Result<Vec<u64>, String> {
+        let out = std::process::Command::new("docker")
+            .args([
+                "exec", container, "mysql", "-uroot", "-ppassword",
+                "-N", "-B", "-e", sql,
+            ])
+            .output()
+            .map_err(|e| format!("scan pks: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "scan pks failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u64>().ok())
+            .collect())
+    };
+    Ok(SourcePks {
+        chars: q(&format!("SELECT guid FROM `{stage}`.characters;"))?,
+        items: q(&format!("SELECT guid FROM `{stage}`.item_instance;"))
+            .unwrap_or_default(),
+        pets: q(&format!("SELECT id FROM `{stage}`.character_pet;"))
+            .unwrap_or_default(),
+        mails: q(&format!("SELECT id FROM `{stage}`.mail;")).unwrap_or_default(),
+        auctions: q(&format!("SELECT id FROM `{stage}`.auctionhouse;"))
+            .unwrap_or_default(),
     })
 }
 
-fn check_guid_conflicts(container: &str, guids: &[u64]) -> Result<Vec<u64>, String> {
-    if guids.is_empty() {
-        return Ok(Vec::new());
+/// Apply every PK + FK shift inside the stage schema. Build one
+/// concatenated SQL script and run it in a single mysql invocation —
+/// no transaction needed (stage is throwaway), and a single connection
+/// is faster than spawning many `docker exec mysql` calls.
+fn apply_shifts(
+    container: &str,
+    stage: &str,
+    o: RestoreOffsets,
+    src: &SourcePks,
+) -> Result<(), String> {
+    let mut sql = String::new();
+
+    // ── PK shifts ─────────────────────────────────────────────────
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.characters SET guid = guid + {};\n", o.char_guid
+    ));
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.item_instance SET guid = guid + {};\n", o.item_guid
+    ));
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.character_pet SET id = id + {};\n", o.pet_id
+    ));
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.mail SET id = id + {};\n", o.mail_id
+    ));
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.auctionhouse SET id = id + {};\n", o.auction_id
+    ));
+
+    // ── char_guid FK shifts (unconditional) ───────────────────────
+    let char_guid_unconditional: &[(&str, &str)] = &[
+        ("character_account_data", "guid"),
+        ("character_achievement", "guid"),
+        ("character_achievement_progress", "guid"),
+        ("character_action", "guid"),
+        ("character_glyphs", "guid"),
+        ("character_homebind", "guid"),
+        ("character_queststatus", "guid"),
+        ("character_queststatus_rewarded", "guid"),
+        ("character_queststatus_daily", "guid"),
+        ("character_queststatus_weekly", "guid"),
+        ("character_queststatus_monthly", "guid"),
+        ("character_queststatus_seasonal", "guid"),
+        ("character_reputation", "guid"),
+        ("character_skills", "guid"),
+        ("character_spell", "guid"),
+        ("character_talent", "guid"),
+        ("character_inventory", "guid"),
+        ("character_equipmentsets", "guid"),
+        ("character_arena_stats", "guid"),
+        ("character_banned", "guid"),
+        ("character_battleground_random", "guid"),
+        ("character_brew_of_the_month", "guid"),
+        ("character_entry_point", "guid"),
+        ("character_instance", "guid"),
+        ("character_stats", "guid"),
+        ("character_social", "guid"),
+        ("character_pet", "owner"),
+        ("item_instance", "owner_guid"),
+        ("mail", "receiver"),
+        ("mail_items", "receiver"),
+        ("auctionhouse", "itemowner"),
+        ("battleground_deserters", "guid"),
+    ];
+    for (t, c) in char_guid_unconditional {
+        sql.push_str(&format!(
+            "UPDATE `{stage}`.`{t}` SET `{c}` = `{c}` + {};\n", o.char_guid
+        ));
     }
-    let csv = guids
-        .iter()
-        .map(|g| g.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+
+    // ── item_guid FK shifts ───────────────────────────────────────
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.character_inventory SET item = item + {};\n", o.item_guid
+    ));
+    // bag = 0 means "main inventory, not in a container"; only shift
+    // when it's an actual item_instance reference.
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.character_inventory SET bag = bag + {} WHERE bag <> 0;\n",
+        o.item_guid
+    ));
+    // character_equipmentsets has 19 item slots; sentinel 0 = empty.
+    for n in 0..=18 {
+        sql.push_str(&format!(
+            "UPDATE `{stage}`.character_equipmentsets \
+             SET item{n} = item{n} + {} WHERE item{n} <> 0;\n",
+            o.item_guid
+        ));
+    }
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.mail_items SET item_guid = item_guid + {};\n", o.item_guid
+    ));
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.auctionhouse SET itemguid = itemguid + {};\n", o.item_guid
+    ));
+
+    // ── pet_id FK shifts ──────────────────────────────────────────
+    for t in &["pet_aura", "pet_spell", "pet_spell_cooldown"] {
+        sql.push_str(&format!(
+            "UPDATE `{stage}`.`{t}` SET guid = guid + {};\n", o.pet_id
+        ));
+    }
+
+    // ── mail_id FK shifts ─────────────────────────────────────────
+    sql.push_str(&format!(
+        "UPDATE `{stage}`.mail_items SET mail_id = mail_id + {};\n", o.mail_id
+    ));
+
+    // ── Conditional shifts ────────────────────────────────────────
+    // Only shift if the value was in the migrated chars' guid set;
+    // otherwise leave alone (dangling pointer is preferable to a
+    // silently-corrupted reference to an unrelated target row).
+    if !src.chars.is_empty() {
+        let chars_csv = src.chars.iter().map(|g| g.to_string())
+            .collect::<Vec<_>>().join(",");
+        let conds: &[(&str, &str)] = &[
+            ("character_social", "friend"),
+            ("mail", "sender"),
+            ("item_instance", "creatorGuid"),
+            ("item_instance", "giftCreatorGuid"),
+            ("auctionhouse", "buyguid"),
+        ];
+        for (t, c) in conds {
+            sql.push_str(&format!(
+                "UPDATE `{stage}`.`{t}` SET `{c}` = `{c}` + {} WHERE `{c}` IN ({chars_csv});\n",
+                o.char_guid
+            ));
+        }
+    }
+    // Silence unused warnings for SourcePks fields we don't reference
+    // in the shift logic yet (items/pets/mails/auctions are tracked
+    // for symmetry + future use, e.g. detecting orphaned references).
+    let _ = (&src.items, &src.pets, &src.mails, &src.auctions);
+
+    run_mysql_script(container, stage, &sql)
+        .map_err(|e| format!("apply shifts: {e}"))
+}
+
+/// INSIDE a transaction: copy stage → target for every table, then
+/// rebind account. On any failure the COMMIT never runs and MySQL
+/// rolls the transaction back when the connection closes.
+fn merge_into_target(
+    container: &str,
+    stage: &str,
+    target_account_id: u64,
+    new_char_guids: &[u64],
+) -> Result<(), String> {
+    let existing = list_chardb_tables(container)?;
+    let new_guids_csv = new_char_guids.iter()
+        .map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+
+    let mut sql = String::new();
+    // autocommit=0 + START TRANSACTION = if any statement fails before
+    // COMMIT, the connection close auto-rolls back. mysql also exits
+    // non-zero on the first error, so we never reach COMMIT in that
+    // case.
+    sql.push_str("SET autocommit=0;\n");
+    sql.push_str("START TRANSACTION;\n");
+
+    for t in RESTORE_TABLE_ORDER {
+        if !existing.contains(*t) {
+            continue;
+        }
+        let filter = filter_for_table(t, &new_guids_csv, stage);
+        sql.push_str(&format!(
+            "INSERT INTO acore_characters.`{t}` SELECT * FROM `{stage}`.`{t}` WHERE {filter};\n"
+        ));
+    }
+    // Rebind account ownership to the chosen target account. Done
+    // INSIDE the transaction so a failure here also rolls back the
+    // imported rows.
+    sql.push_str(&format!(
+        "UPDATE acore_characters.characters SET account = {target_account_id} \
+         WHERE guid IN ({new_guids_csv});\n"
+    ));
+    sql.push_str("COMMIT;\n");
+
+    run_mysql_script(container, "acore_characters", &sql)
+        .map_err(|e| format!("merge into target: {e}"))
+}
+
+/// Per-table WHERE clause restricting the rows we copy from stage to
+/// target. All clauses are written against the SHIFTED ids in stage
+/// (apply_shifts ran before this function).
+fn filter_for_table(table: &str, new_guids_csv: &str, stage: &str) -> String {
+    match table {
+        // Player-guid keyed tables
+        "characters"
+        | "character_account_data"
+        | "character_achievement"
+        | "character_achievement_progress"
+        | "character_action"
+        | "character_glyphs"
+        | "character_homebind"
+        | "character_queststatus"
+        | "character_queststatus_rewarded"
+        | "character_queststatus_daily"
+        | "character_queststatus_weekly"
+        | "character_queststatus_monthly"
+        | "character_queststatus_seasonal"
+        | "character_reputation"
+        | "character_skills"
+        | "character_spell"
+        | "character_talent"
+        | "character_inventory"
+        | "character_equipmentsets"
+        | "character_arena_stats"
+        | "character_banned"
+        | "character_battleground_random"
+        | "character_brew_of_the_month"
+        | "character_entry_point"
+        | "character_instance"
+        | "character_stats"
+        | "character_social"
+        | "battleground_deserters" => format!("guid IN ({new_guids_csv})"),
+        "item_instance" => format!("owner_guid IN ({new_guids_csv})"),
+        "character_pet" => format!("owner IN ({new_guids_csv})"),
+        "mail" => format!("receiver IN ({new_guids_csv})"),
+        "mail_items" => format!("receiver IN ({new_guids_csv})"),
+        "auctionhouse" => format!("itemowner IN ({new_guids_csv})"),
+        // Pet sub-tables filter through stage.character_pet → owner
+        "pet_aura" | "pet_spell" | "pet_spell_cooldown" => format!(
+            "guid IN (SELECT id FROM `{stage}`.character_pet WHERE owner IN ({new_guids_csv}))"
+        ),
+        // Defensive default — never reached if RESTORE_TABLE_ORDER is
+        // kept in sync, but better to error than silently copy
+        // everything.
+        other => format!("0 -- unknown table {other}, skip all rows"),
+    }
+}
+
+/// Post-commit sanity check: confirm every restored character has its
+/// FK rows intact. A successful COMMIT means all INSERTs landed; this
+/// query catches the (very unlikely) case where the offset math itself
+/// was off — e.g. a row pointing at a guid that doesn't exist.
+fn verify_integrity(container: &str, new_char_guids: &[u64]) -> Result<(), String> {
+    if new_char_guids.is_empty() {
+        return Ok(());
+    }
+    let csv = new_char_guids.iter().map(|g| g.to_string())
+        .collect::<Vec<_>>().join(",");
+    // Spot-check: every restored character should have at least one
+    // inventory row (every char has a starter outfit). If even one
+    // restored character has zero inventory rows after restore, the
+    // shift miscalculated somewhere.
     let sql = format!(
-        "SELECT guid FROM acore_characters.characters WHERE guid IN ({csv});"
+        "SELECT c.guid FROM acore_characters.characters c \
+         LEFT JOIN acore_characters.character_inventory i ON i.guid = c.guid \
+         WHERE c.guid IN ({csv}) GROUP BY c.guid HAVING COUNT(i.guid) = 0;"
     );
     let out = std::process::Command::new("docker")
         .args([
-            "exec", container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql,
+            "exec", container, "mysql", "-uroot", "-ppassword",
+            "-N", "-B", "-e", &sql,
         ])
         .output()
-        .map_err(|e| format!("docker exec mysql: {e}"))?;
+        .map_err(|e| format!("integrity check: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "conflict check failed: {}",
+            "integrity check failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.trim().parse::<u64>().ok())
-        .collect())
+    let orphans: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines().map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty()).collect();
+    if !orphans.is_empty() {
+        return Err(format!(
+            "Restore completed but characters {} have no inventory rows — \
+             possible FK desync. Investigate before relying on these chars.",
+            orphans.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// Pipe a SQL script into `mysql` via stdin — handles arbitrary-sized

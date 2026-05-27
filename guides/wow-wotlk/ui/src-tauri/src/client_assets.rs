@@ -48,21 +48,46 @@ const BASE_MPQS: &[&str] = &[
     "patch-3.MPQ",
 ];
 
-/// Locale MPQs (English). Added at HIGHEST priority so localized DBC
-/// rows (Spell.dbc with English text, Item.dbc with translated names,
-/// etc.) shadow the placeholder rows in the base MPQs. Without these
-/// our spell/item-set extractor returns empty `name`/`description`
-/// strings since the base DBCs ship those columns blank.
-const LOCALE_DIR: &str = "enUS";
-const LOCALE_MPQS: &[&str] = &[
-    "base-enUS.MPQ",
-    "locale-enUS.MPQ",
-    "expansion-locale-enUS.MPQ",
-    "lichking-locale-enUS.MPQ",
-    "patch-enUS.MPQ",
-    "patch-enUS-2.MPQ",
-    "patch-enUS-3.MPQ",
+/// Known 3.3.5a locale codes in preference order. If the user has more
+/// than one locale dir present (rare — multi-locale installs do exist),
+/// we pick the first one in this list that has a `base-<locale>.MPQ`
+/// inside it. English variants come first because that's our default
+/// fallback for `loc()`; non-English locales follow.
+const KNOWN_LOCALES: &[&str] = &[
+    "enUS", "enGB", "frFR", "deDE", "esES", "esMX",
+    "ruRU", "koKR", "zhCN", "zhTW", "ptBR", "itIT",
 ];
+
+/// Scan `<wow_dir>/Data/<locale>/` and return the first locale code
+/// that exists AND contains a `base-<locale>.MPQ`. Returns None if no
+/// recognizable locale dir is present — the patch chain will still
+/// open the base MPQs (DBCs without localized strings work fine), but
+/// extracted names/descriptions will be blank.
+fn detect_locale(data_dir: &Path) -> Option<&'static str> {
+    for &loc in KNOWN_LOCALES {
+        let candidate = data_dir.join(loc).join(format!("base-{loc}.MPQ"));
+        if candidate.exists() {
+            return Some(loc);
+        }
+    }
+    None
+}
+
+/// Build the locale-specific MPQ file list for a given locale code.
+/// Locale MPQs are added at HIGHEST priority so localized DBC rows
+/// (Spell.dbc text, Item.dbc names, etc.) shadow placeholders in the
+/// base MPQs.
+fn locale_mpq_names(locale: &str) -> Vec<String> {
+    vec![
+        format!("base-{locale}.MPQ"),
+        format!("locale-{locale}.MPQ"),
+        format!("expansion-locale-{locale}.MPQ"),
+        format!("lichking-locale-{locale}.MPQ"),
+        format!("patch-{locale}.MPQ"),
+        format!("patch-{locale}-2.MPQ"),
+        format!("patch-{locale}-3.MPQ"),
+    ]
+}
 
 /// DBC paths inside the MPQ. Note the backslash separator — MPQ
 /// archive names use Windows-style paths and `wow_mpq` doesn't
@@ -102,12 +127,32 @@ pub(crate) fn open_patch_chain(
         .map(|n| data_dir.join(n))
         .filter(|p| p.exists())
         .collect();
-    let locale_root = data_dir.join(LOCALE_DIR);
-    let locale_paths: Vec<PathBuf> = LOCALE_MPQS
-        .iter()
-        .map(|n| locale_root.join(n))
-        .filter(|p| p.exists())
-        .collect();
+    // Autodetect the client's locale instead of assuming enUS. Without
+    // this, non-English clients (frFR, deDE, etc.) silently fail to
+    // open their locale MPQs — which is where the localized DBC rows
+    // AND some patched files (often ItemDisplayInfo on French/German
+    // clients) actually live.
+    let (locale_paths, detected_locale): (Vec<PathBuf>, Option<&'static str>) =
+        match detect_locale(&data_dir) {
+            Some(loc) => {
+                let root = data_dir.join(loc);
+                let paths: Vec<PathBuf> = locale_mpq_names(loc)
+                    .into_iter()
+                    .map(|n| root.join(n))
+                    .filter(|p| p.exists())
+                    .collect();
+                (paths, Some(loc))
+            }
+            None => (Vec::new(), None),
+        };
+    if let Some(loc) = detected_locale {
+        log::info!("client locale detected: {loc} ({} MPQs)", locale_paths.len());
+    } else {
+        log::warn!(
+            "no recognized locale dir under {} — localized DBC strings will be blank",
+            data_dir.display()
+        );
+    }
     let total = base_paths.len() + locale_paths.len();
     if base_paths.is_empty() {
         return Err(format!(

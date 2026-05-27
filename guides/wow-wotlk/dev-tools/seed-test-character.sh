@@ -74,7 +74,7 @@ UPDATE characters SET
     level = 60,
     money = 5000000,                 -- 500g
     totalKills = 250,
-    honorPoints = 1500,
+    totalHonorPoints = 1500,
     arenaPoints = 200
 WHERE guid = $GUID;
 EOF
@@ -136,15 +136,15 @@ EOF
 
 # ── Spells: 8 well-known spells ───────────────────────────────────
 mysql_exec <<EOF
-INSERT IGNORE INTO character_spell (guid, spell, specMask, active, disabled) VALUES
-    ($GUID, 81,    255, 1, 0),    -- Dodge
-    ($GUID, 522,   255, 1, 0),    -- SPELLDEFENSE (DND)
-    ($GUID, 668,   255, 1, 0),    -- Language Common
-    ($GUID, 2382,  255, 1, 0),    -- Generic
-    ($GUID, 3050,  255, 1, 0),    -- Detect
-    ($GUID, 5009,  255, 1, 0),    -- Wands
-    ($GUID, 7266,  255, 1, 0),    -- Duel
-    ($GUID, 8386,  255, 1, 0);    -- Attacking
+INSERT IGNORE INTO character_spell (guid, spell, specMask) VALUES
+    ($GUID, 81,    255),    -- Dodge
+    ($GUID, 522,   255),    -- SPELLDEFENSE (DND)
+    ($GUID, 668,   255),    -- Language Common
+    ($GUID, 2382,  255),    -- Generic
+    ($GUID, 3050,  255),    -- Detect
+    ($GUID, 5009,  255),    -- Wands
+    ($GUID, 7266,  255),    -- Duel
+    ($GUID, 8386,  255);    -- Attacking
 EOF
 
 # ── Homebind: Stormwind Trade District ────────────────────────────
@@ -163,9 +163,13 @@ EOF
 
 # ── Auras: 2 buffs ────────────────────────────────────────────────
 mysql_exec <<EOF
+-- Use real buff spells with no movement/control side-effects. Earlier
+-- placeholders (spell 25, 79) turned out to be stun effects — the
+-- char logged in immobilized and surrounded by ice. These are visible
+-- but harmless cosmetic buffs.
 INSERT IGNORE INTO character_aura (guid, casterGuid, itemGuid, spell, effectMask, recalculateMask, stackCount, amount0, amount1, amount2, base_amount0, base_amount1, base_amount2, maxDuration, remainTime, remainCharges) VALUES
-    ($GUID, $GUID, 0, 25, 1, 0, 1, 0, 0, 0, 0, 0, 0, -1, -1, 0),       -- Spellpower buff (placeholder)
-    ($GUID, $GUID, 0, 79, 1, 0, 1, 0, 0, 0, 0, 0, 0, -1, -1, 0);       -- Heroic Strike (placeholder)
+    ($GUID, $GUID, 0, 1126,  7, 0, 1, 0, 0, 0, 0, 0, 0, -1, -1, 0),    -- Mark of the Wild (rank 1)
+    ($GUID, $GUID, 0, 21562, 1, 0, 1, 0, 0, 0, 0, 0, 0, -1, -1, 0);    -- Power Word: Fortitude (rank 6)
 EOF
 
 # ── Quests: 2 active + 3 rewarded ─────────────────────────────────

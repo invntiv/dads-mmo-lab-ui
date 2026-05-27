@@ -67,17 +67,23 @@ pub enum AddOutcome {
 // We bundle a per-target set and only copy what we have — missing slots
 // simply don't land, and Steam falls back to its generic tile.
 // The Lab — properly sized library art (PNG) provided by the maintainer.
-// Note: we intentionally don't bundle the logo overlay (1280×720); when a
-// non-Steam shortcut has no logo, Steam shows the AppName over the hero,
-// which matches store-bought titles in the library.
+// Five-asset set per target: header, vertical capsule, hero, icon, logo.
+// The logo is the transparent wordmark overlay that Steam composites on
+// top of the hero in the library AND uses as the main card art in the
+// gamescope pause menu. We pair it with a `<appid>.json` position
+// config (see install_logo_position) that pins it to BottomLeft at
+// ~35% — that matches where Steam draws the auto-AppName for shortcuts
+// without a logo, so the wordmark IS the title rather than covering it.
 const THELAB_HEADER:  &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryHeader_Capsule_920x430.png");
 const THELAB_CAPSULE: &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryCapsule_VerticalCover_600x900.png");
 const THELAB_HERO:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryHero_WideBanner_3840x1240.png");
+const THELAB_LOGO:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_LibraryLogo_Overlay_1280x720.png");
 const THELAB_ICON:    &[u8] = include_bytes!("../resources/steam-art/TheLab_Steam_ShortcupAppIcon_256x256.png");
-// WoW — same four-asset set (header, vertical capsule, hero, icon).
+// WoW — same five-asset set.
 const WOW_HEADER:  &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryHeader_Capsule_920x430.png");
 const WOW_CAPSULE: &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryCapsule_VerticalCover_600x900.png");
 const WOW_HERO:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryHero_WideBanner1920x620.jpg");
+const WOW_LOGO:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_LibraryLogo_Overlay_1280x720.png");
 const WOW_ICON:    &[u8] = include_bytes!("../resources/steam-art/WOTLK_Steam_ShortcupAppIcon_256x256.jpg");
 
 #[derive(Serialize, Debug, Clone)]
@@ -498,32 +504,31 @@ fn install_artwork(user_dir: &Path, target: SteamTarget, appid: u32) -> u32 {
     //   <appid>.<ext>         → wide library header capsule (920×430)
     //   <appid>p.<ext>        → vertical poster (600×900) — the grid view
     //   <appid>_hero.<ext>    → game-details banner (3840×1240 / 1920×620)
+    //   <appid>_logo.<ext>    → transparent wordmark overlay (1280×720)
     //   <appid>_icon.<ext>    → square icon (256×256)
     //
-    // We deliberately omit `_logo` (1280×720): when a non-Steam shortcut
-    // has no logo, Steam draws the game's AppName over the hero, which
-    // matches how most store-bought titles look in the library. Adding a
-    // logo overlay covers the name and feels off-brand.
+    // We DO include `_logo` now — gamescope's in-game pause menu shows
+    // the broken-image placeholder without it, because that card pulls
+    // specifically from the logo slot rather than falling back to the
+    // banner+text combo Steam's library uses. Pairing the logo with a
+    // BottomLeft position config (install_logo_position) keeps it from
+    // dominating the banner the way an unconfigured logo does.
     let files: &[(&str, &str, &[u8])] = match target {
         SteamTarget::Thelab => &[
             ("", "png", THELAB_HEADER),
             ("p", "png", THELAB_CAPSULE),
             ("_hero", "png", THELAB_HERO),
+            ("_logo", "png", THELAB_LOGO),
             ("_icon", "png", THELAB_ICON),
         ],
         SteamTarget::Wow => &[
             ("", "png", WOW_HEADER),
             ("p", "png", WOW_CAPSULE),
             ("_hero", "jpg", WOW_HERO),
+            ("_logo", "png", WOW_LOGO),
             ("_icon", "jpg", WOW_ICON),
         ],
     };
-
-    // If we wrote a logo on a previous version, sweep it so the AppName
-    // overlay returns. Best-effort; no failure path.
-    for ext in ["png", "jpg"] {
-        let _ = std::fs::remove_file(grid.join(format!("{appid}_logo.{ext}")));
-    }
 
     let mut written = 0u32;
     for (suffix, ext, bytes) in files {
@@ -532,7 +537,40 @@ fn install_artwork(user_dir: &Path, target: SteamTarget, appid: u32) -> u32 {
             written += 1;
         }
     }
+
+    // Logo position config — Steam reads `<appid>.json` in the same
+    // grid/ dir to know where on the hero banner to render the logo
+    // overlay (and at what scale). Without it Steam defaults to
+    // CenterCenter at 100% size, which means the wordmark hangs in the
+    // middle of the banner over whatever art is there — that's the
+    // "covers the background" complaint that drove the original
+    // decision to skip the logo entirely. Pinning BottomLeft at 35%
+    // matches where Steam would draw the auto-AppName text for
+    // shortcuts without a logo, so the wordmark functions as the title
+    // (which is what it IS) instead of dominating the banner. Users
+    // can right-click the hero in Steam to reposition if they want.
+    if install_logo_position(&grid, appid).is_ok() {
+        written += 1;
+    }
     written
+}
+
+/// Write the per-shortcut logo-position config Steam reads to know
+/// where to render the logo overlay on the library detail page.
+/// Format reverse-engineered from Steam's own writes — visible by
+/// repositioning a logo via right-click on any library entry, then
+/// inspecting the resulting `<appid>.json` file.
+fn install_logo_position(grid: &Path, appid: u32) -> std::io::Result<()> {
+    let json = r#"{
+  "nVersion": 1,
+  "logoPosition": {
+    "pinnedPosition": "BottomLeft",
+    "nWidthPct": 35.0,
+    "nHeightPct": 35.0
+  }
+}
+"#;
+    std::fs::write(grid.join(format!("{appid}.json")), json)
 }
 
 // ── Targets ──────────────────────────────────────────────────────────

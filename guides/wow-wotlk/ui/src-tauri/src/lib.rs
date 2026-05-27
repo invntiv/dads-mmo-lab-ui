@@ -177,6 +177,38 @@ pub fn run() {
                 let _ = webview.window().show();
             }
         })
+        .setup(|app| {
+            // Steam Deck Gaming Mode runs every app under gamescope —
+            // detectable via the GAMESCOPE_WAYLAND_DISPLAY env var (also
+            // XDG_CURRENT_DESKTOP=gamescope on most setups). When we
+            // detect it, force the window fullscreen so Steam's bottom
+            // overlay strip (the STEAM | MENU bar) sits ON TOP of our
+            // viewport rather than EATING our last ~40px and swallowing
+            // clicks on bottom-anchored UI (Back-to-dashboard, character
+            // switcher). Windowed apps under gamescope get a render area
+            // that excludes that strip but the strip is still in the
+            // pointer-event space — fullscreen sidesteps both.
+            //
+            // Desktop Mode never sets GAMESCOPE_WAYLAND_DISPLAY, so the
+            // window stays windowed with normal decorations (the user's
+            // explicit ask: "minimize/maximize/close like normal in
+            // desktop mode, lock gaming mode to fullscreen").
+            use tauri::Manager;
+            let in_gamescope = std::env::var("GAMESCOPE_WAYLAND_DISPLAY").is_ok()
+                || std::env::var("XDG_CURRENT_DESKTOP")
+                    .map(|v| v.eq_ignore_ascii_case("gamescope"))
+                    .unwrap_or(false);
+            if in_gamescope {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.set_fullscreen(true) {
+                        log::warn!("set_fullscreen failed: {e}");
+                    } else {
+                        log::info!("gamescope detected — fullscreen enabled");
+                    }
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -223,7 +223,7 @@ function ConsolePortLKCard() {
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground">
           {installed
-            ? `Installed at ${shortPath(status.client_dir)}`
+            ? `Installed at ${shortPath(status.client_dir)}/Interface/Addons/`
             : "Bundled with this app — no internet needed."}
         </div>
         <Button

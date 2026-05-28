@@ -33,6 +33,13 @@ import {
   StopIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { LottieLoop } from "@/components/lottie-loop"
 import { PreInstallTooltip } from "@/components/pre-install-tooltip"
 import {
@@ -40,6 +47,7 @@ import {
   type ActivePage,
 } from "@/components/server-state-context"
 import { cn } from "@/lib/utils"
+import { trackedInvoke } from "@/lib/tauri"
 import loadingAnimation from "@/assets/lottie/loadingV4.json"
 
 /**
@@ -133,9 +141,119 @@ export function ServerActionGroup() {
               />
             )}
           </SidebarMenuItem>
+          {installed && (
+            <SidebarMenuItem className="mt-2">
+              <AutoShutdownToggle worldserverStatus={worldserverStatus} />
+            </SidebarMenuItem>
+          )}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
+  )
+}
+
+/**
+ * Auto-shutdown toggle: when ON, a backend watcher polls every 5s for
+ * `Wow.exe`. Once it has SEEN the client running at least once and then
+ * sees it exit, it auto-stops the server. The two-phase "see first, then
+ * watch for exit" design means flipping this on without the client open
+ * doesn't immediately kill a server you're actively administering.
+ *
+ * Idempotent on the backend: `ensure_client_watcher` no-ops if a watcher
+ * is already alive, and the watcher self-exits when the setting is
+ * turned off or the server stops on its own.
+ */
+function AutoShutdownToggle({
+  worldserverStatus,
+}: {
+  worldserverStatus: ReturnType<typeof useServerState>["worldserverStatus"]
+}) {
+  const [enabled, setEnabled] = React.useState<boolean | null>(null)
+
+  // Load persisted value on mount. While the initial value is unknown
+  // we render the checkbox in an indeterminate visual state (not
+  // checked, not interactive) so we don't briefly flash "off" and then
+  // snap to "on" if the user previously enabled it.
+  React.useEffect(() => {
+    let cancelled = false
+    void trackedInvoke<boolean>("get_auto_shutdown_on_client_exit")
+      .then((v) => {
+        if (!cancelled) setEnabled(v)
+      })
+      .catch((e) => {
+        console.warn("get_auto_shutdown_on_client_exit failed", e)
+        if (!cancelled) setEnabled(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Whenever (a) toggle is on AND (b) server is actually running, ask
+  // the backend to ensure the watcher exists. The backend CAS makes
+  // this safe to spam — only one watcher will ever exist at a time.
+  React.useEffect(() => {
+    if (enabled !== true) return
+    if (worldserverStatus !== "running") return
+    void trackedInvoke("ensure_client_watcher").catch((e) =>
+      console.warn("ensure_client_watcher failed", e)
+    )
+  }, [enabled, worldserverStatus])
+
+  const handleChange = (next: boolean) => {
+    setEnabled(next) // optimistic
+    void trackedInvoke("set_auto_shutdown_on_client_exit", { value: next })
+      .then(() => {
+        if (next && worldserverStatus === "running") {
+          return trackedInvoke("ensure_client_watcher")
+        }
+      })
+      .catch((e) => {
+        console.warn("set_auto_shutdown_on_client_exit failed", e)
+        // Revert on failure so the UI doesn't lie.
+        setEnabled(!next)
+      })
+  }
+
+  const disabled = enabled === null
+  return (
+    <TooltipProvider delayDuration={150}>
+      <label
+        className={cn(
+          // pl-2 matches the SidebarMenuButton's internal `p-2`. The
+          // checkbox is wrapped in a size-5 slot so its center aligns
+          // with the size-5 Play/Stop icon in the server button above,
+          // and the "Auto-shutdown" text aligns with that button's label.
+          "group/auto-shutdown flex w-full cursor-pointer items-center gap-2 pl-2 py-1.5 text-sm text-sidebar-foreground/70 transition-colors hover:text-sidebar-foreground",
+          disabled && "cursor-default opacity-60"
+        )}
+      >
+        <span className="flex size-5 items-center justify-center">
+          <Checkbox
+            className="size-3.5"
+            checked={enabled === true}
+            disabled={disabled}
+            onCheckedChange={(c) => handleChange(c === true)}
+            aria-label="Auto-shutdown when WoW client exits"
+          />
+        </span>
+        {/* The explanatory tooltip used to hang off a question-mark
+            icon, but the icon was too small to read on a Steam Deck
+            screen. Hover lives on the label text itself now. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="select-none">Auto-shutdown</span>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="max-w-xs whitespace-normal">
+            Watches the WoW client process (Wow.exe) once you launch it,
+            then automatically stops the server when you close the game.
+            Toggling this on without the client running won't shut the
+            server down — the watcher only triggers after it has seen
+            the client running at least once.
+          </TooltipContent>
+        </Tooltip>
+      </label>
+    </TooltipProvider>
   )
 }
 

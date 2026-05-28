@@ -23,6 +23,18 @@ export type InstallStatus =
   | "failed"
   | "cancelled"
 
+/** Lifecycle for the Settings → Uninstall flow. Smaller surface than
+ *  install — no cancel or resume path. */
+export type UninstallStatus = "idle" | "running" | "succeeded" | "failed"
+
+export type UninstallOptions = {
+  variant: InstallVariant
+  keepClientData: boolean
+  removeImages: boolean
+  wipeAppConfig: boolean
+  wipeCaches: boolean
+}
+
 /**
  * Per-module config the onboarding wizard knows how to ask about.
  * Mirrors the Rust `AhBotConfig` / `IndividualProgressionConfig` / `ModuleConfig`
@@ -164,6 +176,23 @@ type ServerOutputEvent = {
 
 type ServerDoneEvent = {
   action: ServerActionKind
+  success: boolean
+  code: number | null
+  message: string | null
+}
+
+type UninstallOutputEvent = {
+  stream: "stdout" | "stderr" | "system" | "highlight"
+  line: string
+  transient: boolean
+}
+
+type UninstallSectionEvent = {
+  stage: "start" | "end"
+  title: string | null
+}
+
+type UninstallDoneEvent = {
   success: boolean
   code: number | null
   message: string | null
@@ -327,6 +356,14 @@ type ServerState = {
   addSwitcherCharacter: (guid: number) => Promise<void>
   /** Remove from the switcher list only — never deletes from the chardb. */
   removeSwitcherCharacter: (guid: number) => Promise<void>
+
+  // Uninstall lifecycle (Settings → Uninstall)
+  uninstallStatus: UninstallStatus
+  uninstallLog: InstallLogEntry[]
+  uninstallPending: InstallLogLine | null
+  uninstallExitCode: number | null
+  startUninstall: (opts: UninstallOptions) => Promise<void>
+  resetUninstall: () => void
 
   // Enrichment caches — loaded once at app start, shared by every
   // item-rendering surface. Empty / null means the extractor hasn't
@@ -605,6 +642,15 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     React.useState<ServerActionKind | null>(null)
   const [serverConsoleState, setServerConsoleState] =
     React.useState<ConsoleState>(EMPTY_CONSOLE_STATE)
+
+  // ── Uninstall lifecycle ─────────────────────────────────────────────
+  const [uninstallStatus, setUninstallStatus] =
+    React.useState<UninstallStatus>("idle")
+  const [uninstallConsoleState, setUninstallConsoleState] =
+    React.useState<ConsoleState>(EMPTY_CONSOLE_STATE)
+  const [uninstallExitCode, setUninstallExitCode] = React.useState<number | null>(
+    null
+  )
 
   // Monotonic id so React keys are stable even if text repeats
   const lineCounter = React.useRef(0)
@@ -954,6 +1000,19 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       )
     })
 
+    // BE-initiated stops (auto-shutdown watcher) bypass our stopServer
+    // callback, so kind/status/console never get primed. Hook the
+    // backend's "auto-shutdown is about to fire" event to do the same
+    // prep that stopServer() does — kind=stop, status=running, fresh
+    // console — so the user sees "Stopping the server" with live
+    // output, not a stale "Starting the server" panel from their
+    // previous Start action.
+    const autoShutdownPromise = listen("server:auto-shutdown-fired", () => {
+      setServerConsoleState(EMPTY_CONSOLE_STATE)
+      setServerActionKind("stop")
+      setServerActionStatus("running")
+    })
+
     const donePromise = listen<ServerDoneEvent>("server:done", (e) => {
       setServerConsoleState(flushOnTerminate)
       const verb =
@@ -990,8 +1049,119 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     return () => {
       void outputPromise.then((fn) => fn()).catch(() => {})
       void donePromise.then((fn) => fn()).catch(() => {})
+      void autoShutdownPromise.then((fn) => fn()).catch(() => {})
     }
   }, [nextId, refreshServerStatus])
+
+  // ── Uninstall event subscriptions ────────────────────────────────────
+  React.useEffect(() => {
+    if (!isTauri()) return
+
+    const outputPromise = listen<UninstallOutputEvent>(
+      "uninstall:output",
+      (e) => {
+        const { stream, line, transient } = e.payload
+        setUninstallConsoleState((prev) =>
+          transient
+            ? applyTransient(prev, stream, line, nextId)
+            : applyFinal(prev, stream, line, nextId)
+        )
+      }
+    )
+
+    const sectionPromise = listen<UninstallSectionEvent>(
+      "uninstall:section",
+      (e) => {
+        if (e.payload.stage === "start") {
+          const title = e.payload.title ?? "Section"
+          setUninstallConsoleState((prev) =>
+            applySectionStart(prev, title, nextId)
+          )
+        } else {
+          setUninstallConsoleState(applySectionEnd)
+        }
+      }
+    )
+
+    const donePromise = listen<UninstallDoneEvent>("uninstall:done", (e) => {
+      setUninstallConsoleState(flushOnTerminate)
+      setUninstallExitCode(e.payload.code)
+      const nextStatus: UninstallStatus = e.payload.success
+        ? "succeeded"
+        : "failed"
+      setUninstallStatus(nextStatus)
+      const msg = e.payload.success
+        ? `Uninstaller exited cleanly (code ${e.payload.code ?? 0}).`
+        : `Uninstaller failed (code ${e.payload.code ?? "?"}${
+            e.payload.message ? ": " + e.payload.message : ""
+          }).`
+      setUninstallConsoleState((prev) =>
+        applyFinal(prev, "system", msg, nextId)
+      )
+      // Refresh install detection so the dashboard flips back to Welcome
+      // / Install once the directory is gone.
+      void refreshInstalls()
+    })
+
+    return () => {
+      void outputPromise.then((fn) => fn()).catch(() => {})
+      void sectionPromise.then((fn) => fn()).catch(() => {})
+      void donePromise.then((fn) => fn()).catch(() => {})
+    }
+  }, [nextId, refreshInstalls])
+
+  const startUninstall = React.useCallback(
+    async (opts: UninstallOptions) => {
+      if (!isTauri()) {
+        setUninstallStatus("running")
+        setUninstallConsoleState({
+          log: [
+            {
+              kind: "line",
+              data: {
+                id: nextId(),
+                stream: "system",
+                text: "[browser preview] Tauri runtime not detected — no uninstall will run.",
+              },
+            },
+          ],
+          topPending: null,
+        })
+        return
+      }
+      setUninstallConsoleState(EMPTY_CONSOLE_STATE)
+      setUninstallExitCode(null)
+      setUninstallStatus("running")
+      try {
+        await trackedInvoke("start_uninstall", {
+          request: {
+            variant: opts.variant,
+            keepClientData: opts.keepClientData,
+            removeImages: opts.removeImages,
+            wipeAppConfig: opts.wipeAppConfig,
+            wipeCaches: opts.wipeCaches,
+          },
+        })
+      } catch (err) {
+        setUninstallStatus("failed")
+        setUninstallConsoleState((prev) =>
+          applyFinal(
+            prev,
+            "system",
+            `Failed to launch uninstaller: ${String(err)}`,
+            nextId
+          )
+        )
+      }
+    },
+    [nextId]
+  )
+
+  const resetUninstall = React.useCallback(() => {
+    setUninstallStatus("idle")
+    setUninstallConsoleState(EMPTY_CONSOLE_STATE)
+    setUninstallExitCode(null)
+  }, [])
 
   const startInstall = React.useCallback(
     async (choices: OnboardingChoices) => {
@@ -1164,6 +1334,28 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     setServerConsoleState(EMPTY_CONSOLE_STATE)
   }, [])
 
+  // Menu-nav wrapper: if a server action just finished (succeeded /
+  // failed) and the user picks a sidebar item, they want to LEAVE the
+  // console screen and go where they clicked. Without this, clicking a
+  // nav entry while serverActionStatus is terminal looks broken —
+  // activePage updates, but the App-level routing pins ServerControlScreen
+  // because `serverActionStatus !== "idle"`. We reset the action state
+  // alongside the page change so the pane falls through to the
+  // requested page. Skips during "running" so a user can't accidentally
+  // abandon an in-flight start/stop/restart by clicking around.
+  const setActivePageWithReset = React.useCallback(
+    (page: ActivePage) => {
+      setActivePage(page)
+      if (
+        serverActionStatus === "succeeded" ||
+        serverActionStatus === "failed"
+      ) {
+        resetServerAction()
+      }
+    },
+    [serverActionStatus, resetServerAction]
+  )
+
   const restartServerInternal = restartServer
   const configureAhbotCharacter = React.useCallback(
     async (account: number, guid: number) => {
@@ -1209,7 +1401,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       restartServer,
       resetServerAction,
       activePage,
-      setActivePage,
+      setActivePage: setActivePageWithReset,
       selectedBot,
       openBotDetail,
       installedModules,
@@ -1224,6 +1416,12 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       switcherCharacters,
       addSwitcherCharacter,
       removeSwitcherCharacter,
+      uninstallStatus,
+      uninstallLog: uninstallConsoleState.log,
+      uninstallPending: uninstallConsoleState.topPending,
+      uninstallExitCode,
+      startUninstall,
+      resetUninstall,
       iconMap,
       tooltipData,
       refreshEnrichmentCaches,
@@ -1250,6 +1448,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       restartServer,
       resetServerAction,
       activePage,
+      setActivePageWithReset,
       selectedBot,
       openBotDetail,
       installedModules,
@@ -1264,6 +1463,11 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       switcherCharacters,
       addSwitcherCharacter,
       removeSwitcherCharacter,
+      uninstallStatus,
+      uninstallConsoleState,
+      uninstallExitCode,
+      startUninstall,
+      resetUninstall,
       iconMap,
       tooltipData,
       refreshEnrichmentCaches,

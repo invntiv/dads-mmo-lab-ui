@@ -24,12 +24,24 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
+import {
+  useCursorFaction,
+  type CursorFaction,
+} from "@/components/cursor-faction-context"
 import { CharacterBackupWizard } from "@/components/character-backup-wizard"
 import { CharacterRestoreWizard } from "@/components/character-restore-wizard"
 import { ControllerSupportSection } from "@/components/controller-support-section"
 import { ModulesEmbedded } from "@/components/modules-screen"
 import { SteamIntegrationSection } from "@/components/steam-integration-section"
+import { UninstallSection } from "@/components/uninstall-section"
 import { UpdateChecker } from "@/components/update-checker"
 import { ScrollProgress } from "@/components/ui/scroll-progress"
 import { Separator } from "@/components/ui/separator"
@@ -363,6 +375,16 @@ export function SettingsScreen() {
         <SectionDivider />
 
         <Section
+          icon={<SparkleIcon className="size-5 text-muted-foreground" />}
+          title="Cursor"
+          subtitle="Use a Warcraft-themed cursor inside The Lab. Scoped to this window only — your system cursor in other apps is unaffected."
+        >
+          <CursorSettings />
+        </Section>
+
+        <SectionDivider />
+
+        <Section
           icon={<FolderOpenIcon className="size-5 text-muted-foreground" />}
           title="WoW client"
           subtitle="Manage the connection to your local WoW 3.3.5a install. Connecting + setting the realmlist happen on the Dashboard via the WoW Client card; disconnecting (Forget) lives here so it can't be triggered by accident."
@@ -525,6 +547,16 @@ export function SettingsScreen() {
         >
           <ModulesEmbedded />
         </Section>
+
+        <SectionDivider />
+
+        <Section
+          icon={<TrashIcon className="size-5 text-rose-600 dark:text-rose-400" />}
+          title="Uninstall server"
+          subtitle="Tear down your WoW server, its database, and the launcher script. Your WoW client files are untouched. Useful for a fresh-install test or before switching server variants."
+        >
+          <UninstallSection />
+        </Section>
       </div>
       {/* Character management wizards live at the screen root so they
           mount once. Open state above; the cards in the Character
@@ -574,6 +606,46 @@ function Section({
 }
 
 /** Audio prefs — shared with the title-bar mute toggle via the sfx store. */
+function CursorSettings() {
+  const { faction, setFaction } = useCursorFaction()
+  // Order matches the user-facing intent: "Default" (off) on top so
+  // users can disable the custom cursor without scrolling.
+  const options: { value: CursorFaction; label: string }[] = [
+    { value: "default", label: "Default (system cursor)" },
+    { value: "human", label: "Human" },
+    { value: "elf", label: "Elf" },
+    { value: "undead", label: "Undead" },
+    { value: "orc", label: "Orc" },
+  ]
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-card p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1">
+          <div className="text-sm font-medium">Cursor style</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Pick a faction. The change applies immediately.
+          </div>
+        </div>
+        <Select
+          value={faction}
+          onValueChange={(v) => setFaction(v as CursorFaction)}
+        >
+          <SelectTrigger className="w-[220px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  )
+}
+
 function AudioSettings() {
   const { enabled, volume, setEnabled, setVolume } = useSfx()
   return (

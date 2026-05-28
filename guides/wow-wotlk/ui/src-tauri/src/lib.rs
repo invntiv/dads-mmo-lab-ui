@@ -20,6 +20,7 @@ mod talent_dataset;
 mod talent_harvest;
 pub mod talent_trees;
 mod teleport;
+mod uninstall;
 mod wow_client;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -92,6 +93,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(external_navigation_plugin())
         .manage(install::InstallState::default())
+        .manage(uninstall::UninstallState::default())
         .manage(server::ServerControlState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -100,6 +102,7 @@ pub fn run() {
             install::adopt_install,
             install::start_install,
             install::cancel_install,
+            uninstall::start_uninstall,
             server::get_server_status,
             server::start_server,
             server::stop_server,
@@ -156,6 +159,11 @@ pub fn run() {
             app_settings::set_selected_character_guid,
             app_settings::get_switcher_character_guids,
             app_settings::set_switcher_character_guids,
+            app_settings::get_auto_shutdown_on_client_exit,
+            app_settings::set_auto_shutdown_on_client_exit,
+            app_settings::get_cursor_faction,
+            app_settings::set_cursor_faction,
+            server::ensure_client_watcher,
             dashboard::get_character_paperdoll,
             dashboard::gm_set_money,
             dashboard::gm_set_health_pct,

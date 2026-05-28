@@ -2,6 +2,8 @@ import * as React from "react"
 import type { CSSProperties } from "react"
 
 import { AhBotIntroOverlay } from "@/components/ahbot-intro-overlay"
+import { AutoShutdownAlertDialog } from "@/components/auto-shutdown-alert-dialog"
+import { CursorFactionProvider } from "@/components/cursor-faction-context"
 import { SplashScreen } from "@/components/splash-screen"
 import { AppSidebar } from "@/components/app-sidebar"
 import { BotDetailScreen } from "@/components/bot-detail-screen"
@@ -31,14 +33,25 @@ export default function App() {
   const [splashDone, setSplashDone] = React.useState(false)
   return (
     <TooltipProvider>
-      <ServerStateProvider>
-        <AppShell />
-      </ServerStateProvider>
-      {/* Sonner mount — every toast() call anywhere in the app
-          renders through here. Outside ServerStateProvider so a
-          provider error still surfaces a toast. */}
-      <Toaster position="top-right" richColors closeButton />
-      {!splashDone && <SplashScreen onDone={() => setSplashDone(true)} />}
+      {/* CursorFactionProvider wraps the entire tree so the Warcraft
+          cursor class lands on an outer element and cascades down via
+          its `* { cursor: ... }` rule. Scope is the webview, so other
+          apps are unaffected. */}
+      <CursorFactionProvider>
+        <ServerStateProvider>
+          <AppShell />
+        </ServerStateProvider>
+        {/* Sonner mount — every toast() call anywhere in the app
+            renders through here. Outside ServerStateProvider so a
+            provider error still surfaces a toast. */}
+        <Toaster position="top-right" richColors closeButton />
+        {/* Listens for the backend's auto-shutdown event and shows an
+            explanatory AlertDialog so users aren't blindsided when the
+            server stops on its own. Mounted outside ServerStateProvider
+            for the same reason as the Toaster. */}
+        <AutoShutdownAlertDialog />
+        {!splashDone && <SplashScreen onDone={() => setSplashDone(true)} />}
+      </CursorFactionProvider>
     </TooltipProvider>
   )
 }

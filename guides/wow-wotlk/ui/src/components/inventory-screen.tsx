@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { ScrollProgress } from "@/components/ui/scroll-progress"
+import { ShineBorder } from "@/components/ui/shine-border"
 import {
   Select,
   SelectContent,
@@ -376,7 +377,13 @@ function ItemTile({
   const quality = QUALITY_COLORS[item.quality] ?? "text-foreground"
   const iconName = iconMap[String(item.display_id)]
   return (
-    <div className="group flex items-center gap-3 rounded-md border border-border bg-card p-3 transition-colors hover:border-primary/40">
+    <div className="group relative flex items-center gap-3 rounded-md border border-border bg-card p-3 shadow-sm transition-all hover:shadow-md">
+      <ShineBorder
+        className="opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        borderWidth={1.5}
+        duration={6}
+        shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
+      />
       {/* Hover anywhere on the icon-and-name region to open the
           tooltip. Wowhead link + Send button live OUTSIDE this
           wrapper as siblings, so hovering them doesn't fire the

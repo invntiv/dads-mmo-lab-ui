@@ -1,0 +1,34 @@
+/* Cursor-only subset of warcraftcn-ui's warcraft.css.
+ *
+ * The upstream file (~28KB, 980 lines) ships every Warcraft-themed
+ * component style + a Google Fonts @import we don't want pulled at
+ * runtime. We only use the four faction cursor classes, so this is a
+ * trimmed copy.
+ *
+ * The upstream assets are .cur (Windows cursor format). WebKitGTK
+ * doesn't have a CUR decoder, so the assets here are PNGs converted
+ * from the upstream .cur via `dev-tools/cur2png.py`. The hotspot is
+ * the `0 0` after the url() — original CURs had hotspot (0,0) per
+ * `file *.cur`, so we mirror that. If a new cursor variant ships
+ * upstream, re-fetch + re-run cur2png.py.
+ */
+
+.wc-orc-cursor,
+.wc-orc-cursor * {
+  cursor: url("../assets/cursors/orc.png") 0 0, auto;
+}
+
+.wc-human-cursor,
+.wc-human-cursor * {
+  cursor: url("../assets/cursors/human.png") 0 0, auto;
+}
+
+.wc-elf-cursor,
+.wc-elf-cursor * {
+  cursor: url("../assets/cursors/elf.png") 0 0, auto;
+}
+
+.wc-undead-cursor,
+.wc-undead-cursor * {
+  cursor: url("../assets/cursors/undead.png") 0 0, auto;
+}

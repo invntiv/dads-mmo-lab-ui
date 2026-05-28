@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -10,9 +11,15 @@ use tokio::process::Command;
 /// Tracks the PID of any in-flight `docker compose up/down` so the UI's
 /// stop button can SIGTERM the whole group if needed. Spawned with
 /// `process_group(0)` so `kill(-pid, SIGTERM)` takes down the tree.
+///
+/// `client_watcher_alive` is a CAS flag so the auto-shutdown watcher
+/// (see `ensure_client_watcher`) can't spawn more than once at a time —
+/// the frontend calls the ensure-fn liberally (every server start, every
+/// toggle flip) and we rely on this flag to coalesce.
 #[derive(Default)]
 pub struct ServerControlState {
     pub running_pid: Mutex<Option<u32>>,
+    pub client_watcher_alive: AtomicBool,
 }
 
 /// AzerothCore worldserver listens on this host port (mapped from the
@@ -39,6 +46,10 @@ struct DoneEvent {
 
 pub const EVT_OUTPUT: &str = "server:output";
 pub const EVT_DONE: &str = "server:done";
+/// Fired when the auto-shutdown watcher triggers a stop because the WoW
+/// client exited. The UI shows an AlertDialog explaining the shutdown
+/// so users don't think the server crashed on its own.
+pub const EVT_AUTO_SHUTDOWN_FIRED: &str = "server:auto-shutdown-fired";
 
 /// Server runtime status from the Docker daemon's POV — used by both the
 /// initial detection on app startup and by the post-action recheck.
@@ -585,4 +596,125 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+// ── Auto-shutdown-on-client-exit watcher ────────────────────────────
+//
+// Polls every 5s for the WoW client process. The loop enters in a
+// "looking for the client" state; once it sees `Wow.exe` running it
+// flips to "watching for exit" — that two-phase design is why toggling
+// the setting on with no client open doesn't immediately kill a server
+// the user is doing other work against.
+//
+// Exits early on any of:
+//   * `auto_shutdown_on_client_exit` setting flipped off
+//   * worldserver no longer Running (Stopped, Crashed, etc.)
+//   * client was seen, then went away — in which case it ALSO fires
+//     stop_server before exiting
+//
+// Single-instance guard via the `client_watcher_alive` CAS flag in
+// ServerControlState. The frontend calls `ensure_client_watcher`
+// liberally (after start, on toggle-on); the CAS makes duplicate calls
+// no-ops.
+
+const CLIENT_POLL_INTERVAL_SECS: u64 = 5;
+
+/// True iff `pgrep -f Wow.exe` finds any process. Steam Deck users run
+/// WoW under Proton/Wine, where the Windows EXE name appears verbatim
+/// in the process command line — `pgrep -f` matches against /proc/<pid>/cmdline.
+fn wow_client_is_running() -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-f", "Wow.exe"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Idempotent: if a watcher is already running, returns without doing
+/// anything. Otherwise spawns one. Safe to call any time; the watcher
+/// re-checks the auto-shutdown setting on every tick and self-exits
+/// if it's been turned off.
+///
+/// Must be `async fn` (not `fn`) — sync Tauri commands run on a worker
+/// thread without an attached tokio reactor, so `tokio::spawn` inside
+/// would panic with "no reactor running". `async fn` commands are
+/// dispatched on Tauri's tokio runtime.
+#[tauri::command]
+pub async fn ensure_client_watcher(
+    app: AppHandle,
+    state: State<'_, ServerControlState>,
+) -> Result<(), String> {
+    // CAS the "alive" flag — if we lose the race, another task is
+    // already watching and we have nothing to do.
+    if state
+        .client_watcher_alive
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let app = app.clone();
+    tokio::spawn(async move {
+        let mut seen_client = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(CLIENT_POLL_INTERVAL_SECS))
+                .await;
+
+            // Bail if the setting got turned off mid-flight.
+            if !crate::app_settings::load().auto_shutdown_on_client_exit {
+                log::info!("client watcher: setting disabled, exiting");
+                break;
+            }
+
+            // Bail if the server isn't actually running anymore — no
+            // point watching a stopped server. We check via the same
+            // detection get_server_status uses so transient states
+            // (Starting/Crashed) don't trip the watcher.
+            let still_running = worldserver_container_name()
+                .and_then(|n| container_state(&n))
+                .as_deref()
+                == Some("running")
+                && worldserver_accepts_connections();
+            if !still_running {
+                log::info!("client watcher: worldserver no longer running, exiting");
+                break;
+            }
+
+            let running = wow_client_is_running();
+            if running {
+                if !seen_client {
+                    log::info!("client watcher: WoW client detected — armed");
+                }
+                seen_client = true;
+                continue;
+            }
+            if seen_client {
+                log::info!("client watcher: WoW client exited — auto-stopping server");
+                let state = app.state::<ServerControlState>();
+                match stop_server(app.clone(), state).await {
+                    Ok(()) => {
+                        // Notify the UI so we can surface an AlertDialog
+                        // explaining why the server just stopped. Silent
+                        // shutdowns are confusing — "I quit WoW for a
+                        // minute, came back, server's off?".
+                        if let Err(e) = app.emit(EVT_AUTO_SHUTDOWN_FIRED, ()) {
+                            log::warn!("emit auto-shutdown event: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("client watcher: stop_server failed: {e}");
+                    }
+                }
+                break;
+            }
+            // !running && !seen_client → keep polling (user hasn't
+            // launched the client yet)
+        }
+        // Release the single-instance flag so the next ensure_client_watcher
+        // call can spawn a fresh watcher.
+        let state = app.state::<ServerControlState>();
+        state.client_watcher_alive.store(false, Ordering::Release);
+    });
+    Ok(())
 }

@@ -330,10 +330,19 @@ for i in "${!TARGET_DIRS[@]}"; do
     dir="${TARGET_DIRS[$i]}"
     name="${TARGET_NAMES[$i]}"
     print_info "Stopping $name..."
-    if [ -f "$dir/docker-compose.yml" ]; then
+    # Check both compose conventions — newer installs may use compose.yml.
+    compose_file=""
+    [ -f "$dir/compose.yml" ]         && compose_file="$dir/compose.yml"
+    [ -f "$dir/docker-compose.yml" ]  && compose_file="$dir/docker-compose.yml"
+    if [ -n "$compose_file" ]; then
         cd "$dir"
-        if ! docker compose down --remove-orphans 2>/dev/null; then
-            if ! sudo docker compose down --remove-orphans 2>/dev/null; then
+        # `down -v` also tears down compose-declared volumes — combined
+        # with explicit named-volume cleanup in STEP 3 it covers both
+        # the anonymous and the prefixed-by-project-name cases.
+        DOWN_FLAGS="down -v --remove-orphans"
+        [ "$KEEP_CLIENT_DATA" = true ] && DOWN_FLAGS="down --remove-orphans"
+        if ! docker compose $DOWN_FLAGS 2>/dev/null; then
+            if ! sudo docker compose $DOWN_FLAGS 2>/dev/null; then
                 print_warning "$name containers may still be running — proceeding anyway."
                 print_info "Stop them manually later with: docker compose down"
             fi

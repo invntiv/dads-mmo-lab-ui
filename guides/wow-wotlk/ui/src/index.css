@@ -175,6 +175,24 @@ body {
   .ui-selectable {
     @apply select-text;
   }
+
+  /* MagicUI ShineBorder animation — sweeps a soft gradient around the
+     border-mask, looks like an animated outline. Duration is controlled
+     per-instance via the --duration CSS var (default 14s). */
+  @keyframes shine {
+    0% {
+      background-position: 0% 0%;
+    }
+    50% {
+      background-position: 100% 100%;
+    }
+    100% {
+      background-position: 0% 0%;
+    }
+  }
+  .animate-shine {
+    animation: shine var(--duration, 14s) infinite linear;
+  }
 }
 
 /* Themed scrollbars (Chromium webview). */

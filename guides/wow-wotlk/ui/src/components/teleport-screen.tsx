@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollFade, useCanScrollDown } from "@/components/ui/scroll-fade"
+import { ShineBorder } from "@/components/ui/shine-border"
 import { useServerState } from "@/components/server-state-context"
 import { trackedInvoke, isTauri } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
@@ -475,7 +476,13 @@ function LocationTile({
   busy: boolean
 }) {
   return (
-    <div className="group flex items-center gap-2 rounded-md border border-border bg-card p-2.5 transition-colors hover:border-primary/40">
+    <div className="group relative flex items-center gap-2 rounded-md border border-border bg-card p-2.5 shadow-sm transition-all hover:shadow-md">
+      <ShineBorder
+        className="opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        borderWidth={1.5}
+        duration={6}
+        shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
+      />
       <MapPinIcon className="size-4 shrink-0 text-muted-foreground" />
       <div className="flex-1 min-w-0">
         <div className="truncate text-sm font-medium leading-tight">

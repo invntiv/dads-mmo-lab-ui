@@ -331,6 +331,23 @@ running_in_container() {
     return 1
 }
 
+# Returns 0 only when `docker` is REAL Docker (not the podman-docker shim
+# SteamOS sometimes ships) AND the `docker compose` plugin works. The shim
+# satisfies `docker ps` but NOT `docker compose` (compose v2 is a Go plugin
+# unrelated to podman). The AC stack depends on compose, so any earlier
+# check that only ran `docker ps` is a false positive on a shim-only host.
+is_real_docker() {
+    docker compose version &>/dev/null \
+        && ! docker --version 2>&1 | grep -qi podman
+}
+
+# True iff the podman-docker shim package is installed. The shim owns
+# /usr/bin/docker, which both produces the false positive above and blocks
+# a real `pacman -S docker` from installing due to file conflict.
+has_podman_docker_shim() {
+    pacman -Qi podman-docker &>/dev/null
+}
+
 # acore-docker's compile builds use `RUN --mount`, which needs BuildKit.
 # Docker can be present WITHOUT the buildx plugin (Arch ships it as a
 # separate `docker-buildx` package), so verify it independently of docker
@@ -353,7 +370,13 @@ ensure_buildx() {
 }
 
 install_docker() {
-    if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
+    # Early return ONLY if real Docker (not the podman shim) is in place AND
+    # the daemon is reachable. The old check used `docker ps` alone, which
+    # silently accepted the podman-docker shim — later `docker compose up`
+    # then failed because podman doesn't ship compose v2.
+    if command -v docker &>/dev/null \
+        && is_real_docker \
+        && docker ps &>/dev/null 2>&1; then
         print_success "Docker already installed and running"
         ensure_buildx
         return 0
@@ -401,11 +424,23 @@ install_docker() {
             print_info  "Run install-wow.sh from Konsole — it handles the keyring reset interactively."
             exit 1
         fi
+        # Drop the podman-docker shim before installing real docker. If left
+        # in place, pacman aborts with a file conflict on /usr/bin/docker.
+        # `-Rdd` skips dep checks since podman may declare a dep on the shim.
+        if has_podman_docker_shim; then
+            print_info "Removing podman-docker shim so real Docker can install..."
+            sudo -n pacman -Rdd --noconfirm podman-docker >/dev/null 2>&1 \
+                || print_warning "Couldn't remove podman-docker — falling back to --overwrite"
+        fi
         # docker-buildx provides BuildKit. acore-docker's Dockerfile uses
         # `RUN --mount=type=cache/bind`, which only works under BuildKit —
         # without it, compile builds die with "the --mount option requires
         # BuildKit" and produce no worldserver image.
-        if ! sudo -n pacman -S --noconfirm docker docker-compose docker-buildx; then
+        #
+        # `--overwrite '/usr/bin/docker'` is belt-and-suspenders against
+        # leftover shim files (e.g. the `-Rdd podman-docker` step above
+        # failed but the file is still on disk).
+        if ! sudo -n pacman -S --noconfirm --overwrite '/usr/bin/docker' docker docker-compose docker-buildx; then
             print_error "Failed to install Docker via pacman."
             exit 1
         fi
@@ -439,6 +474,15 @@ install_docker() {
     sudo -n chmod 0440 /etc/sudoers.d/docker-nopasswd 2>/dev/null || true
     sudo -n chmod 666 /var/run/docker.sock 2>/dev/null || true
 
+    # Fail loudly if the install ended up with the shim still in charge —
+    # `docker ps` may succeed via podman, but `docker compose up` will fail
+    # later, and we want the failure surface to be HERE not five minutes
+    # into an AC compile.
+    if ! is_real_docker; then
+        print_error "Docker install completed but the binary still looks like the podman-docker shim."
+        print_info  "Run: sudo pacman -Rdd --noconfirm podman-docker && sudo pacman -S --overwrite '/usr/bin/docker' docker docker-compose"
+        exit 1
+    fi
     if ! docker ps &>/dev/null 2>&1; then
         if sudo -n docker ps &>/dev/null 2>&1; then
             function docker() { sudo -n docker "$@"; }

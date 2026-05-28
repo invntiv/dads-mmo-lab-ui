@@ -44,6 +44,18 @@ pub struct AppSettings {
     /// drops it from the switcher, it never deletes the character.
     /// `selected_character_guid` is the active one among these.
     pub switcher_character_guids: Vec<u64>,
+    /// When ON, the worldserver auto-stops when the user's WoW client
+    /// process (`Wow.exe`, launched via Steam/Proton) exits. The
+    /// background watcher only triggers AFTER it has seen the client
+    /// running at least once — so toggling this on with no client open
+    /// doesn't immediately kill the server.
+    pub auto_shutdown_on_client_exit: bool,
+    /// Warcraft-themed cursor inside The Lab's window. One of:
+    /// `"default"` (system cursor), `"human"`, `"elf"`, `"undead"`,
+    /// `"orc"`. None = treat as the default ("human") — that's our
+    /// chosen first-run default. Scoped to the Tauri webview, so it
+    /// never bleeds into other applications.
+    pub cursor_faction: Option<String>,
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -160,5 +172,53 @@ pub fn get_switcher_character_guids() -> Vec<u64> {
 pub fn set_switcher_character_guids(guids: Vec<u64>) -> Result<(), String> {
     let mut s = load();
     s.switcher_character_guids = guids;
+    save(&s)
+}
+
+// ── Auto-shutdown on WoW client exit ────────────────────────────────
+
+#[tauri::command]
+pub fn get_auto_shutdown_on_client_exit() -> bool {
+    load().auto_shutdown_on_client_exit
+}
+
+#[tauri::command]
+pub fn set_auto_shutdown_on_client_exit(value: bool) -> Result<(), String> {
+    let mut s = load();
+    if s.auto_shutdown_on_client_exit == value {
+        return Ok(());
+    }
+    s.auto_shutdown_on_client_exit = value;
+    save(&s)
+}
+
+// ── Cursor faction (warcraftcn cursor variant) ──────────────────────
+
+/// Default cursor faction on first run. Surfaced via the Settings
+/// dropdown as the first option after "Default" (system cursor).
+const DEFAULT_CURSOR_FACTION: &str = "human";
+
+#[tauri::command]
+pub fn get_cursor_faction() -> String {
+    load()
+        .cursor_faction
+        .unwrap_or_else(|| DEFAULT_CURSOR_FACTION.to_string())
+}
+
+#[tauri::command]
+pub fn set_cursor_faction(value: String) -> Result<(), String> {
+    // Defensive: reject anything not in the known set so the UI can't
+    // poke arbitrary class-name fragments into the webview's root.
+    if !matches!(
+        value.as_str(),
+        "default" | "human" | "elf" | "undead" | "orc"
+    ) {
+        return Err(format!("unknown cursor faction: {value}"));
+    }
+    let mut s = load();
+    if s.cursor_faction.as_deref() == Some(&value) {
+        return Ok(());
+    }
+    s.cursor_faction = Some(value);
     save(&s)
 }

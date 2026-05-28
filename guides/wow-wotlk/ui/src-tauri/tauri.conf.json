@@ -40,6 +40,7 @@
     "createUpdaterArtifacts": true,
     "resources": {
       "../../install-wow-ui.sh": "install-wow-ui.sh",
+      "../../uninstall-wow-ui.sh": "uninstall-wow-ui.sh",
       "../../dml-bootstrap.sh": "dml-bootstrap.sh"
     },
     "icon": [

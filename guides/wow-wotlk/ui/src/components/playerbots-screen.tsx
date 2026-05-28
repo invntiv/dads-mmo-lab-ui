@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/popover"
 import { ScrollFade, useCanScrollDown } from "@/components/ui/scroll-fade"
 import { ScrollProgress } from "@/components/ui/scroll-progress"
+import { ShineBorder } from "@/components/ui/shine-border"
 import {
   Select,
   SelectContent,
@@ -782,10 +783,16 @@ function BotTileWithMenu({
             // without touching content size. gap-3 restored so the
             // icon-to-text gap is the same as before; the OTHER gap
             // (card-edge to icon) is what shrank.
-            "group flex w-full items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4 text-left transition-colors hover:border-primary/40",
+            "group relative flex w-full items-center gap-3 rounded-md border border-border bg-card py-3 pl-3 pr-4 text-left shadow-sm transition-all hover:shadow-md",
             open && "border-primary/60 ring-1 ring-primary/30"
           )}
         >
+          <ShineBorder
+            className="opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            borderWidth={1.5}
+            duration={6}
+            shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
+          />
           <div
             className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-muted"
             style={{ borderColor: ringColor }}

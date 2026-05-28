@@ -27,6 +27,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::app_settings;
+
 /// Tracks the PID of an in-flight uninstall so a future cancel can signal
 /// it. We don't expose cancel today (the uninstall is short and the user
 /// would likely leave the app in a half-cleaned state if they killed it
@@ -49,19 +51,33 @@ pub struct UninstallRequest {
     /// is the slowest part of install, and keeping it speeds future runs.
     #[serde(default)]
     pub remove_images: bool,
-    /// Wipe ~/.config/dads-mmo-lab/settings.json (selected character,
-    /// dismissed notices, etc). Useful for fresh-install testing.
-    #[serde(default)]
-    pub wipe_app_config: bool,
-    /// Wipe the item-icons / tooltip-data / talent-data JSON caches.
-    /// These are universal across 3.3.5a clients, so the default is to
-    /// preserve them — re-extracting takes minutes.
-    #[serde(default)]
-    pub wipe_caches: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Wipe AppSettings fields that are tied to the now-uninstalled server,
+/// while preserving fields that are app-level preferences (audio,
+/// cursor, inventory toggles, client folder, auto-shutdown).
+///
+/// The split is deliberate: a character GUID from the old server's
+/// `characters` DB has no meaning once that DB is gone, and dismissed
+/// "set up your install" notices from the previous run shouldn't hide
+/// re-applicable prompts on the next install. Everything else is
+/// independent of which server is installed and survives.
+fn wipe_server_bound_settings() -> Result<(), String> {
+    let mut s = app_settings::load();
+    s.selected_character_guid = None;
+    s.switcher_character_guids.clear();
+    s.dismissed_notices.clear();
+    // SOAP credentials are tied to the server's admin account that's
+    // about to be deleted — clear them so the next install (which may
+    // pick different credentials) doesn't try to authenticate against
+    // the old, now-gone account.
+    s.admin_user = None;
+    s.admin_pass = None;
+    app_settings::save(&s)
 }
 
 #[derive(Serialize, Clone)]
@@ -157,6 +173,14 @@ pub async fn start_uninstall(
         }
     }
 
+    // Wipe server-bound app settings before the script runs. Doing it
+    // here (rather than in the shell script) keeps the JSON edit
+    // surgical — bash can't safely mutate a JSON file without dragging
+    // in jq, but we already have the typed AppSettings struct.
+    if let Err(e) = wipe_server_bound_settings() {
+        log::warn!("wipe_server_bound_settings failed: {e}");
+    }
+
     let script = resolve_uninstall_script(&app)?;
 
     let mut cmd = Command::new("bash");
@@ -170,14 +194,6 @@ pub async fn start_uninstall(
         .env(
             "DML_REMOVE_IMAGES",
             if request.remove_images { "1" } else { "0" },
-        )
-        .env(
-            "DML_WIPE_APP_CONFIG",
-            if request.wipe_app_config { "1" } else { "0" },
-        )
-        .env(
-            "DML_WIPE_CACHES",
-            if request.wipe_caches { "1" } else { "0" },
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

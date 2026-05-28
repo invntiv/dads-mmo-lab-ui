@@ -11,21 +11,41 @@
 //! authenticate to SOAP — it uses direct SQL + SRP6 instead). After
 //! bootstrap, this is the universal channel.
 //!
-//! Auth: HTTP Basic with the ADMIN account install-wow-ui.sh creates.
-//! For v1 we hardcode admin/admin since onboarding's custom-credentials
-//! flow doesn't yet persist the password anywhere readable from Rust.
-//! Plumbing custom creds is a follow-up (the install.json could grow
-//! a hashed pointer or we add a keyring-backed store).
+//! Auth: HTTP Basic with the admin account install-wow-ui.sh creates.
+//! Credentials come from `~/.config/dads-mmo-lab/settings.json`
+//! (`admin_user` / `admin_pass`), captured by install.rs after a
+//! successful install and chmod'd 0600 on save. Falls back to the
+//! script's own defaults (ADMIN/admin) if either field is missing —
+//! covers older installs that ran before this code landed.
 
 use std::time::Duration;
 
 use serde::Deserialize;
 
-/// Defaults match what `install-wow-ui.sh` creates. Override later when
-/// we wire custom-credentials from the wizard through to settings.
+use crate::app_settings;
+
+/// Fallback credentials matching install-wow-ui.sh's own defaults when
+/// DML_ADMIN_USER / DML_ADMIN_PASS are unset. Only reached when
+/// settings.json doesn't have admin_user / admin_pass yet (e.g.
+/// adopted installs, or installs done by an older app version).
 const DEFAULT_USER: &str = "ADMIN";
 const DEFAULT_PASS: &str = "admin";
 const SOAP_URL: &str = "http://127.0.0.1:7878/";
+
+/// Resolve the admin credentials for the current install. Reads
+/// settings.json on every call — that file is small (<1KB) and SOAP
+/// commands aren't a hot path (one per user GM action), so the I/O is
+/// negligible against the SOAP round-trip itself. Reading fresh each
+/// time also means a reinstall with new credentials picks up the new
+/// account automatically without an app restart.
+fn admin_credentials() -> (String, String) {
+    let s = app_settings::load();
+    let user = s.admin_user.filter(|u| !u.is_empty())
+        .unwrap_or_else(|| DEFAULT_USER.to_string());
+    let pass = s.admin_pass.filter(|p| !p.is_empty())
+        .unwrap_or_else(|| DEFAULT_PASS.to_string());
+    (user, pass)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SoapCommandResult {
@@ -55,9 +75,10 @@ pub async fn execute_command(command: &str) -> Result<SoapCommandResult, String>
         .build()
         .map_err(|e| format!("build http client: {e}"))?;
 
+    let (user, pass) = admin_credentials();
     let response = client
         .post(SOAP_URL)
-        .basic_auth(DEFAULT_USER, Some(DEFAULT_PASS))
+        .basic_auth(&user, Some(&pass))
         .header("Content-Type", "application/xml")
         .header("SOAPAction", "")
         .body(envelope)

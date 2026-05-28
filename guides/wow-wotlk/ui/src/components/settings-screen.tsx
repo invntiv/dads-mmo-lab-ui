@@ -260,12 +260,19 @@ export function SettingsScreen() {
     setError(null)
     clearProgress("icons")
     clearProgress("tooltips")
+    clearProgress("talents")
     try {
-      // Sequential, not parallel: both extractors open the same MPQ
-      // patch-chain and reading it concurrently from two open()s would
-      // double the disk pressure for no real wall-clock win.
+      // Sequential, not parallel: every extractor opens the same MPQ
+      // patch-chain and reading it concurrently from multiple open()s
+      // would double the disk pressure for no real wall-clock win.
+      // Order: fast → slow → fast so the user sees early progress
+      // (icons), the long Spell.dbc pull (tooltips), then talents to
+      // finish strong. Talents is required for Player Bots specs +
+      // the My Party spec-pick wizard, so leaving it out would silently
+      // break those flows — the bug we're fixing here.
       await trackedInvoke("extract_item_icons")
       await trackedInvoke("extract_tooltip_data")
+      await trackedInvoke("extract_talent_data")
       await Promise.all([refreshStatuses(), refreshEnrichmentCaches()])
     } catch (e) {
       setError(typeof e === "string" ? e : String(e))
@@ -273,6 +280,7 @@ export function SettingsScreen() {
       setBusy(null)
       clearProgress("icons")
       clearProgress("tooltips")
+      clearProgress("talents")
     }
   }
 
@@ -482,14 +490,19 @@ export function SettingsScreen() {
               status="Chains the items above"
               busy={busy === "all"}
               // Show progress for whichever extractor is currently
-              // running inside the chain (icons first, then tooltips).
+              // running inside the chain. Order matters: most-recent-
+              // started first (talents → tooltips → icons) so the
+              // visible strip tracks the active stage as we advance.
               progress={
-                busy === "all" ? progress.tooltips ?? progress.icons : undefined
+                busy === "all"
+                  ? progress.talents ?? progress.tooltips ?? progress.icons
+                  : undefined
               }
               disabled={noClient || busy !== null}
               actionLabel={
                 iconStatus?.status === "ready" &&
-                tooltipStatus?.status === "ready"
+                tooltipStatus?.status === "ready" &&
+                talentStatus?.status === "ready"
                   ? "Re-import everything"
                   : "Import everything"
               }

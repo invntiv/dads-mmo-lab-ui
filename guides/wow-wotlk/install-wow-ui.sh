@@ -264,6 +264,67 @@ install_user_modules() {
 }
 
 # ─────────────────────────────────────────
+# ELUNA (mod-ale) SETUP
+# ─────────────────────────────────────────
+# Clones mod-ale and copies the dml_*.lua bridge scripts into the
+# install's lua_scripts/. mod-ale is the Lua engine; the dml_*.lua
+# files are what register custom SOAP-callable commands like
+# `dml_addclass` (My Party "Add to party") and `dml_whisper` (the
+# relay for talents / autogear / maintenance whispers).
+#
+# Without this, the worldserver compiles cleanly but every SOAP call
+# the UI makes to `dml_*` returns "Command does not exist" — visible
+# in My Party's "Spawn paladin bot — worldserver SOAP fault" toast.
+#
+# Caller contract: must run with $SERVER_DIR set + modules/ present,
+# BEFORE the docker compose build so mod-ale gets compiled into the
+# worldserver image.
+setup_eluna() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local modules_dir="$SERVER_DIR/modules"
+    local lua_scripts_dir="$SERVER_DIR/lua_scripts"
+
+    print_info "Installing Eluna (mod-ale) for whisper / addclass bridge..."
+    if [ -d "$modules_dir/mod-ale" ]; then
+        print_info "mod-ale already present — skipping clone."
+    else
+        if ! git clone --depth 1 \
+            https://github.com/azerothcore/mod-ale.git \
+            "$modules_dir/mod-ale"; then
+            print_warning "mod-ale clone failed."
+            print_warning "Server will still build, but My Party + chat-driven"
+            print_warning "commands (talents / autogear / maintenance) won't work."
+            return 0
+        fi
+    fi
+
+    mkdir -p "$lua_scripts_dir"
+
+    # The Lab's Eluna bridge scripts — each wires a SOAP-callable
+    # command to a player-context action. Names mirror install-wow.sh's
+    # legacy setup_eluna so anything that worked there works here too.
+    local copied=0
+    local missing=0
+    for script_name in dml_whisper.lua dml_addclass.lua dml_uninvite.lua dml_login.lua dml_gm.lua; do
+        local src="$script_dir/eluna-scripts/$script_name"
+        if [ -f "$src" ]; then
+            cp "$src" "$lua_scripts_dir/$script_name"
+            copied=$((copied + 1))
+        else
+            print_warning "$script_name not found at: $src"
+            missing=$((missing + 1))
+        fi
+    done
+    if [ "$missing" -eq 0 ]; then
+        print_success "Eluna installed — $copied bridge scripts ready."
+    else
+        print_warning "Eluna compiled in, but $missing bridge script(s) missing."
+        print_warning "My Party and whisper-driven commands will not work."
+    fi
+}
+
+# ─────────────────────────────────────────
 # RESOLVE INPUTS
 # ─────────────────────────────────────────
 SERVER_TYPE="${DML_SERVER_TYPE:-}"
@@ -706,6 +767,13 @@ services:
         CWITH_WARNINGS: "OFF"
     volumes:
       - ./modules:/azerothcore/modules
+      # Lua scripts for mod-ale (Eluna). The dml_*.lua files in here are
+      # the only way to run things like `.playerbots addclass` AS the
+      # player from outside the game, which is how My Party spawns bots
+      # and how whisper-driven commands (talents, autogear) work.
+      # Without this mount the scripts inside the image are inert —
+      # `dml_addclass` etc. won't exist when SOAP tries to call them.
+      - ./lua_scripts:/azerothcore/env/dist/bin/lua_scripts
     environment:
       AC_PLAYERBOTS_UPDATES_ENABLE_DATABASES: "1"
       AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
@@ -719,6 +787,10 @@ services:
       # unreachable from the host even though the port is published.
       AC_SOAP_ENABLED: "1"
       AC_SOAP_IP: "0.0.0.0"
+      # Tell mod-ale where to find the dml_*.lua scripts. Must be the
+      # CONTAINER-side path (it does relative resolution from /azerothcore,
+      # which won't match our lua_scripts mount otherwise).
+      AC_ALE_SCRIPT_PATH: "/azerothcore/env/dist/bin/lua_scripts"
   ac-authserver:
     build:
       context: .
@@ -740,12 +812,51 @@ OVERRIDE
             # min rebuild). See MODULES_PLAN.md §2.
             install_user_modules
 
-            print_info "Compiling Playerbots (2-4 hours)..."
+            # Eluna (mod-ale) + dml_*.lua bridge. Must run BEFORE the
+            # docker build so mod-ale gets compiled into the worldserver
+            # image; the lua_scripts/ directory it creates is what the
+            # lua_scripts volume mount in the override binds to.
+            setup_eluna
+
+            print_info "Compiling Worldserver (with Playerbots) and Authserver (approx 1.5 hrs)..."
             cd "$SERVER_DIR" || exit 1
-            section_start "Docker build — Playerbots"
-            docker compose up -d --build 2>&1 | tee "$HOME/playerbots-build.log"
-            # Capture the compose exit code NOW — section_end runs a command
-            # and would clobber $PIPESTATUS before we could read it.
+            section_start "Docker build (1/2) — Worldserver + Playerbots"
+            # `docker compose up -d --build` builds multiple images in one
+            # shot — the playerbots-enabled worldserver and the smaller
+            # authserver / db-import / client-data targets. Each is its
+            # own CMake invocation, so the percentage marker `[ NN%]`
+            # resets between them. Without a transition the UI parks them
+            # all under one collapsible with a confusingly-resetting bar.
+            #
+            # Filter the live stream through awk: pass every line through,
+            # and when the percent drops sharply from "near done" back to
+            # "fresh start" (>= 80 → < 10), emit a SECTION::END followed
+            # by a new SECTION::START. The UI then renders a clean second
+            # collapsible labelled "Worldserver" for the next stage.
+            #
+            # `stdbuf -oL` forces line-buffered output on awk so the UI
+            # console doesn't lag the live build by 4KB-sized chunks.
+            docker compose up -d --build 2>&1 \
+                | tee "$HOME/playerbots-build.log" \
+                | stdbuf -oL awk '
+                    BEGIN { last_pct = -1; stage_emitted = 0 }
+                    {
+                        print
+                        if (match($0, /\[ *[0-9]+%\]/)) {
+                            pct_str = substr($0, RSTART, RLENGTH)
+                            gsub(/[^0-9]/, "", pct_str)
+                            pct = pct_str + 0
+                            if (last_pct >= 80 && pct < 10 && !stage_emitted) {
+                                print "::DML::SECTION::END::"
+                                print "::DML::SECTION::START::Docker build (2/2) — Authserver::"
+                                stage_emitted = 1
+                            }
+                            last_pct = pct
+                        }
+                    }'
+            # Capture compose exit code NOW — section_end runs commands
+            # and would clobber $PIPESTATUS. Index [0] is the docker
+            # compose process; tee/stdbuf/awk are downstream.
             BUILD_RC=${PIPESTATUS[0]}
             section_end
             if [ "$BUILD_RC" -ne 0 ]; then

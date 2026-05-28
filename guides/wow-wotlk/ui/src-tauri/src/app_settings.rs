@@ -56,6 +56,16 @@ pub struct AppSettings {
     /// chosen first-run default. Scoped to the Tauri webview, so it
     /// never bleeds into other applications.
     pub cursor_faction: Option<String>,
+    /// SOAP credentials captured from the install wizard. Used by
+    /// `soap::execute_command` to authenticate every GM command the
+    /// app sends. We persist these (rather than re-prompting each
+    /// session) because the audience expects "just works" — but the
+    /// file is chmod'd 0600 on every save, and both fields get
+    /// cleared on uninstall along with selected character / switcher.
+    /// None = fall back to admin/admin (matches install-wow-ui.sh's
+    /// default when DML_ADMIN_USER / DML_ADMIN_PASS weren't set).
+    pub admin_user: Option<String>,
+    pub admin_pass: Option<String>,
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -77,7 +87,10 @@ pub fn load() -> AppSettings {
 }
 
 /// Atomically replace settings.json with the new contents. Creates
-/// the parent directory if it doesn't exist yet.
+/// the parent directory if it doesn't exist yet. File mode is forced
+/// to 0600 (owner read/write only) after each write — admin_pass
+/// lives here, and 644 default mode would expose it to any other
+/// user on the box.
 pub fn save(settings: &AppSettings) -> Result<(), String> {
     let path = settings_path()
         .ok_or_else(|| "Could not resolve config directory".to_string())?;
@@ -89,6 +102,14 @@ pub fn save(settings: &AppSettings) -> Result<(), String> {
         .map_err(|e| format!("serialize settings: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("write {}: {}", path.display(), e))?;
+    // Tighten perms. Best-effort: a chmod failure (rare — same FS we
+    // just wrote to) shouldn't surface as a settings-save error.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ =
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 

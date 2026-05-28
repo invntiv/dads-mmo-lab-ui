@@ -16,6 +16,7 @@ import { PlayerbotsScreen } from "@/components/playerbots-screen"
 import { ServerControlScreen } from "@/components/server-control-screen"
 import { SettingsScreen } from "@/components/settings-screen"
 import { TeleportScreen } from "@/components/teleport-screen"
+import { UninstallSuccessDialog } from "@/components/uninstall-success-dialog"
 import {
   ServerStateProvider,
   useServerState,
@@ -40,6 +41,12 @@ export default function App() {
       <CursorFactionProvider>
         <ServerStateProvider>
           <AppShell />
+          {/* Mounted alongside AppShell (inside the provider so it can
+              read uninstallStatus) so the dialog SURVIVES the route
+              change when `installs` empties and App.tsx kicks the user
+              from Settings back to WelcomeScreen. Without this, the
+              inline success card unmounted before the user could read it. */}
+          <UninstallSuccessDialog />
         </ServerStateProvider>
         {/* Sonner mount — every toast() call anywhere in the app
             renders through here. Outside ServerStateProvider so a

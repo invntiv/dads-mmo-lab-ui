@@ -41,7 +41,12 @@
     "resources": {
       "../../install-wow-ui.sh": "install-wow-ui.sh",
       "../../uninstall-wow-ui.sh": "uninstall-wow-ui.sh",
-      "../../dml-bootstrap.sh": "dml-bootstrap.sh"
+      "../../dml-bootstrap.sh": "dml-bootstrap.sh",
+      "../../eluna-scripts/dml_addclass.lua": "eluna-scripts/dml_addclass.lua",
+      "../../eluna-scripts/dml_gm.lua": "eluna-scripts/dml_gm.lua",
+      "../../eluna-scripts/dml_login.lua": "eluna-scripts/dml_login.lua",
+      "../../eluna-scripts/dml_uninvite.lua": "eluna-scripts/dml_uninvite.lua",
+      "../../eluna-scripts/dml_whisper.lua": "eluna-scripts/dml_whisper.lua"
     },
     "icon": [
       "icons/32x32.png",

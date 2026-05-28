@@ -76,13 +76,20 @@ const DEFAULT_STATE: FormState = {
     "mod-aoe-loot": false,
     "mod-learn-spells": false,
   },
-  // Defaults pulled from mod_ahbot.conf.dist (see MODULES_PLAN.md §Phase 1).
+  // Defaults pulled from mod_ahbot.conf.dist (see MODULES_PLAN.md §Phase 1),
+  // with two overrides that match the offline single-player use case
+  // better than upstream's MMO defaults:
+  //   - enableBuyer ON so the bot bids on player listings — gives the
+  //     player liquidity, otherwise they're stuck with no buyers.
+  //   - professionItems ON so herbs/ores/leather show up on the AH;
+  //     without other players supplying them, they'd be nearly
+  //     impossible to obtain in quantity.
   ahbot: {
     itemsPerCycle: 200,
     elapsingTimeClass: 1,
-    enableBuyer: false,
+    enableBuyer: true,
     vendorItems: false,
-    professionItems: false,
+    professionItems: true,
   },
   // Defaults preserve a "vanilla feel without difficulty tweaks" — the
   // module's intended design. dkRequiresTbc on by default per module
@@ -538,10 +545,9 @@ function AhBotConfigStep({
 
   return (
     <div className="space-y-5">
-      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
-        After install you'll log into WoW once and create a bot character.
-        The Modules page will walk you through it — until then the AH Bot is
-        installed but inert.
+      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+        The AH Bot character is set up for you automatically — no extra
+        steps once the install finishes.
       </div>
 
       <div className="space-y-1.5">
@@ -599,9 +605,16 @@ function AhBotConfigStep({
       <ToggleRow
         id="ahbot-buyer"
         label="Bot also buys from players"
-        blurb="The bot bids on player listings (creates demand). Off by default."
+        blurb="The bot bids on player listings, giving you reliable buyers for whatever you list."
         checked={value.enableBuyer}
         onChange={(v) => onChange({ ...value, enableBuyer: v })}
+      />
+      <ToggleRow
+        id="ahbot-profession"
+        label="Include profession materials"
+        blurb="Herbs, ores, leather, etc. Recommended for offline play — nobody else is gathering them for the AH."
+        checked={value.professionItems}
+        onChange={(v) => onChange({ ...value, professionItems: v })}
       />
       <ToggleRow
         id="ahbot-vendor"
@@ -609,13 +622,6 @@ function AhBotConfigStep({
         blurb="Adds vendor goods to the AH (more variety, less authentic)."
         checked={value.vendorItems}
         onChange={(v) => onChange({ ...value, vendorItems: v })}
-      />
-      <ToggleRow
-        id="ahbot-profession"
-        label="Include profession materials"
-        blurb="Herbs, ores, leather, etc."
-        checked={value.professionItems}
-        onChange={(v) => onChange({ ...value, professionItems: v })}
       />
     </div>
   )

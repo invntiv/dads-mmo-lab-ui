@@ -31,8 +31,6 @@ export type UninstallOptions = {
   variant: InstallVariant
   keepClientData: boolean
   removeImages: boolean
-  wipeAppConfig: boolean
-  wipeCaches: boolean
 }
 
 /**
@@ -1054,6 +1052,9 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
   }, [nextId, refreshServerStatus])
 
   // ── Uninstall event subscriptions ────────────────────────────────────
+  // Note: refreshServerStatus is in the deps list because the done
+  // handler calls it — adding it keeps the listener fresh, same as
+  // refreshInstalls. See the uninstall:done handler below.
   React.useEffect(() => {
     if (!isTauri()) return
 
@@ -1098,9 +1099,24 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       setUninstallConsoleState((prev) =>
         applyFinal(prev, "system", msg, nextId)
       )
+      // Reset in-memory state for fields the Rust uninstaller cleared
+      // out of settings.json. Without this the sidebar still shows the
+      // old selected character until the user reloads the app.
+      if (e.payload.success) {
+        setSelectedCharacterGuidState(null)
+        setSwitcherGuidsState([])
+        // Enrichment caches are wiped on disk; reset in-memory copies
+        // so any item-rendering surface falls back to entry chits until
+        // the user re-extracts after the next install.
+        setIconMap({})
+        setTooltipData(null)
+      }
       // Refresh install detection so the dashboard flips back to Welcome
-      // / Install once the directory is gone.
+      // / Install once the directory is gone. Also refresh worldserver
+      // status — the uninstall stopped the containers but our status
+      // pill was showing the cached pre-uninstall state.
       void refreshInstalls()
+      void refreshServerStatus()
     })
 
     return () => {
@@ -1108,7 +1124,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       void sectionPromise.then((fn) => fn()).catch(() => {})
       void donePromise.then((fn) => fn()).catch(() => {})
     }
-  }, [nextId, refreshInstalls])
+  }, [nextId, refreshInstalls, refreshServerStatus])
 
   const startUninstall = React.useCallback(
     async (opts: UninstallOptions) => {
@@ -1132,14 +1148,41 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       setUninstallConsoleState(EMPTY_CONSOLE_STATE)
       setUninstallExitCode(null)
       setUninstallStatus("running")
+
+      // Same one-time privileged setup as install: docker may need its
+      // socket re-chmoded after a system update, and the script's
+      // docker-as-root rm fallback relies on docker working without
+      // sudo. bootstrap_privileges is a no-op when nothing is needed.
+      try {
+        const boot = await trackedInvoke<{
+          needed: boolean
+          ran: boolean
+          message: string
+        }>("bootstrap_privileges")
+        if (boot.ran) {
+          setUninstallConsoleState((prev) =>
+            applyFinal(prev, "system", `✓ ${boot.message}`, nextId)
+          )
+        }
+      } catch (err) {
+        setUninstallStatus("failed")
+        setUninstallConsoleState((prev) =>
+          applyFinal(
+            prev,
+            "system",
+            `Setup needs permission — ${String(err)}`,
+            nextId
+          )
+        )
+        return
+      }
+
       try {
         await trackedInvoke("start_uninstall", {
           request: {
             variant: opts.variant,
             keepClientData: opts.keepClientData,
             removeImages: opts.removeImages,
-            wipeAppConfig: opts.wipeAppConfig,
-            wipeCaches: opts.wipeCaches,
           },
         })
       } catch (err) {

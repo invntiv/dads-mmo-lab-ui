@@ -23,13 +23,15 @@
 #                         "0" (default) keeps them — image pulls and
 #                         Eluna builds are the slowest part of install,
 #                         and keeping them speeds future re-installs.
-#    DML_WIPE_APP_CONFIG  "1" removes ~/.config/dads-mmo-lab/settings.json
-#                         (selected character, dismissed notices, etc.)
-#                         Useful for fresh-install testing. "0" default.
-#    DML_WIPE_CACHES      "1" removes the item-icons / tooltip-data /
-#                         talent-data JSON caches in ~/.config/dads-mmo-lab/.
-#                         "0" default — caches are universal across
-#                         3.3.5a clients and re-extracting is slow.
+#
+#  Always wipes (no opt-out):
+#    - The item-icons / tooltip-data / talent-data JSON caches in
+#      ~/.config/dads-mmo-lab/ (re-extracted in seconds on next install)
+#    - Server-bound fields in ~/.config/dads-mmo-lab/settings.json
+#      (selected character, switcher GUIDs, dismissed notices) — handled
+#      by the Rust caller before this script runs, so we never need to
+#      touch settings.json from bash. App-level prefs (audio, cursor,
+#      client folder, etc.) are preserved.
 #
 #  Differences from uninstall.sh:
 #    - No `read` prompts, no `clear`. Runs straight through.
@@ -91,6 +93,10 @@ section_end()   { echo "::DML::SECTION::END::"; }
 # ─────────────────────────────────────────
 # SAFE RM -RF — refuses to operate outside $HOME
 # ─────────────────────────────────────────
+# Try plain rm first; falls back to pkexec for the (likely) case where
+# Docker bind-mounts left root-owned files in var/ or data/. pkexec pops
+# the same graphical password dialog the install flow uses for its
+# privileged bootstrap — the user is already familiar with it.
 safe_rm_rf() {
     local target="$1"
     local label="$2"
@@ -110,8 +116,38 @@ safe_rm_rf() {
         print_info "$label: already gone ($target)"
         return 0
     fi
-    sudo rm -rf "$target"
-    print_success "Removed $label: $target"
+
+    # Stage 1: plain rm. Quiet failure here means there are root-owned
+    # files in the tree — fall through to pkexec for those.
+    rm -rf "$target" 2>/dev/null
+    if [ ! -e "$target" ]; then
+        print_success "Removed $label: $target"
+        return 0
+    fi
+
+    # Stage 2: pkexec for root-owned bind-mount remnants. This pops a
+    # graphical password dialog (the same one bootstrap_privileges uses
+    # at install). Errors out cleanly if no polkit agent is available —
+    # the UI surfaces the manual `sudo rm -rf` fallback.
+    if command -v pkexec >/dev/null 2>&1; then
+        print_info "Root-owned files detected (Docker bind mounts)."
+        print_info "A password dialog will appear to finish removal."
+        if pkexec rm -rf "$target"; then
+            if [ ! -e "$target" ]; then
+                print_success "Removed $label: $target"
+                return 0
+            fi
+        else
+            print_warning "Password dialog was cancelled or failed."
+        fi
+    else
+        print_warning "pkexec not available — can't elevate to remove root-owned files."
+    fi
+
+    print_error "Could NOT remove $label: $target"
+    print_info "To finish manually, run in a terminal:"
+    print_info "  sudo rm -rf $target"
+    return 1
 }
 
 # ─────────────────────────────────────────
@@ -122,8 +158,6 @@ print_header
 DML_VARIANT="${DML_VARIANT:-}"
 DML_KEEP_CLIENT_DATA="${DML_KEEP_CLIENT_DATA:-1}"
 DML_REMOVE_IMAGES="${DML_REMOVE_IMAGES:-0}"
-DML_WIPE_APP_CONFIG="${DML_WIPE_APP_CONFIG:-0}"
-DML_WIPE_CACHES="${DML_WIPE_CACHES:-0}"
 
 case "$DML_VARIANT" in
     base)        DEFAULT_DIR="$HOME/wow-server" ;;
@@ -146,8 +180,6 @@ print_info "Variant:            $DML_VARIANT"
 print_info "Install directory:  $TARGET_DIR"
 print_info "Keep client data:   $([ "$DML_KEEP_CLIENT_DATA" = "1" ] && echo yes || echo no)"
 print_info "Remove images:      $([ "$DML_REMOVE_IMAGES" = "1" ] && echo yes || echo no)"
-print_info "Wipe app config:    $([ "$DML_WIPE_APP_CONFIG" = "1" ] && echo yes || echo no)"
-print_info "Wipe caches:        $([ "$DML_WIPE_CACHES" = "1" ] && echo yes || echo no)"
 
 # ─────────────────────────────────────────
 # DOCKER CHECK
@@ -201,11 +233,23 @@ if [ "$DOCKER_AVAILABLE" = "1" ]; then
         print_info "No compose file at $TARGET_DIR — falling back to name-based removal."
     fi
 
-    # Belt-and-suspenders: kill any matching containers by name.
-    for cname in ac_worldserver ac_authserver ac_database ac_eluna \
-                 worldserver authserver ac-database ac-eluna; do
-        dkr rm -f "$cname" 2>/dev/null && print_info "Removed container: $cname" || true
-    done
+    # Belt-and-suspenders: kill any container whose compose-project label
+    # matches THIS install. Switched from name-matching (which could pick
+    # up unrelated acore-docker installs outside The Lab) to label-based
+    # filtering, which scopes us strictly to containers `docker compose`
+    # created inside $TARGET_DIR. Standard label set by Compose v2.
+    PROJECT="$(basename "$TARGET_DIR")"
+    LEFTOVER="$(dkr ps -a \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Names}}' 2>/dev/null)"
+    if [ -n "$LEFTOVER" ]; then
+        while IFS= read -r cname; do
+            [ -z "$cname" ] && continue
+            dkr rm -f "$cname" >/dev/null 2>&1 \
+                && print_info "Removed leftover container: $cname" \
+                || true
+        done <<< "$LEFTOVER"
+    fi
     section_end
 else
     print_info "Docker unavailable — skipping container stop."
@@ -217,21 +261,24 @@ fi
 print_step "STEP 2/4 — Cleaning Volumes and Networks"
 
 if [ "$DOCKER_AVAILABLE" = "1" ]; then
-    # Named volumes the installer creates. The first set is database state;
-    # the second set is client data (kept by default — re-extracting on a
-    # fresh install takes ~15 minutes).
+    # Named volumes the installer creates. Only project-prefixed names
+    # (= safe — Compose auto-prefixes named volumes with the project
+    # name = install-dir basename) plus our one legacy hand-named volume
+    # from the older docker-compose.yml reference. We DO NOT list bare
+    # `ac-database` / `ac-client-data` here: those names belong to the
+    # upstream acore-docker image schema; if a user has a separate
+    # acore-docker install outside The Lab, those volumes would belong
+    # to it, not us.
     DB_VOLUMES=(
         dads_mmo_wow_db
         wow-server_ac-database
         wow-server-npcbots_ac-database
         wow-server-playerbots_ac-database
-        ac-database
     )
     CLIENT_VOLUMES=(
         wow-server_ac-client-data
         wow-server-npcbots_ac-client-data
         wow-server-playerbots_ac-client-data
-        ac-client-data
     )
 
     for vol in "${DB_VOLUMES[@]}"; do
@@ -292,7 +339,10 @@ fi
 # ─────────────────────────────────────────
 print_step "STEP 3/4 — Removing Server Files"
 
-safe_rm_rf "$TARGET_DIR" "$DML_VARIANT install"
+REMOVAL_FAILED=0
+if ! safe_rm_rf "$TARGET_DIR" "$DML_VARIANT install"; then
+    REMOVAL_FAILED=1
+fi
 
 case "$DML_VARIANT" in
     base)
@@ -315,41 +365,41 @@ esac
 # ─────────────────────────────────────────
 # STEP 4/4 — APP-DATA CLEANUP (UI-specific)
 # ─────────────────────────────────────────
+# Always wipes the enrichment caches — extraction takes seconds on the
+# next install and the cached data has no bearing on app-level prefs.
+# settings.json is intentionally NOT touched here: the Rust caller
+# already cleared its server-bound fields (selected character, switcher
+# GUIDs, dismissed notices) before launching us; the remaining fields
+# are app-level prefs that should survive an uninstall.
 print_step "STEP 4/4 — App Data Cleanup"
 
 CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}/dads-mmo-lab"
 
-if [ "$DML_WIPE_APP_CONFIG" = "1" ]; then
-    if [ -f "$CONFIG_BASE/settings.json" ]; then
-        rm -f "$CONFIG_BASE/settings.json"
-        print_success "Removed app settings: $CONFIG_BASE/settings.json"
-    else
-        print_info "App settings already absent."
+for cache in item-icons.json tooltip-data.json talent-data.json; do
+    if [ -f "$CONFIG_BASE/$cache" ]; then
+        rm -f "$CONFIG_BASE/$cache"
+        print_success "Removed cache: $cache"
     fi
-else
-    print_info "Keeping app settings ($CONFIG_BASE/settings.json)."
-fi
+done
 
-if [ "$DML_WIPE_CACHES" = "1" ]; then
-    for cache in item-icons.json tooltip-data.json talent-data.json; do
-        if [ -f "$CONFIG_BASE/$cache" ]; then
-            rm -f "$CONFIG_BASE/$cache"
-            print_success "Removed cache: $cache"
-        fi
-    done
-else
-    print_info "Keeping enrichment caches (icons/tooltips/talents)."
-fi
-
-# Remove the empty config dir if we emptied it.
-if [ -d "$CONFIG_BASE" ] && [ -z "$(ls -A "$CONFIG_BASE" 2>/dev/null)" ]; then
-    rmdir "$CONFIG_BASE" 2>/dev/null && print_info "Removed empty $CONFIG_BASE"
-fi
+print_info "App preferences (audio, cursor, client folder) preserved."
 
 # ─────────────────────────────────────────
 # DONE
 # ─────────────────────────────────────────
 echo ""
+if [ "$REMOVAL_FAILED" = "1" ]; then
+    echo -e "${RED}${BOLD}══════════════════════════════════════════════════${NC}"
+    echo -e "${RED}${BOLD}  Uninstall FAILED — server folder still on disk.${NC}"
+    echo -e "${RED}${BOLD}══════════════════════════════════════════════════${NC}"
+    echo ""
+    print_info "Containers, volumes, and caches were cleaned up, but the"
+    print_info "install directory could not be removed. See above for the"
+    print_info "manual fallback command."
+    echo ""
+    exit 1
+fi
+
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}${BOLD}  Uninstall complete.${NC}"
 echo -e "${GREEN}${BOLD}══════════════════════════════════════════════════${NC}"

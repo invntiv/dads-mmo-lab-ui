@@ -2,7 +2,6 @@ import * as React from "react"
 import {
   ArrowClockwiseIcon,
   CheckCircleIcon,
-  SteamLogoIcon,
   TrashIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react"
@@ -86,12 +85,10 @@ export function UninstallSection() {
   }, [initialVariant])
 
   // Defaults match the script: keep client volume (fast reinstall),
-  // keep images (fast reinstall), keep app config + caches (don't
-  // surprise the user). Fresh-install-test users tick all four.
+  // keep images (fast reinstall). The character/notice wipe + cache
+  // wipe are unconditional now — see the dialog body for what's auto.
   const [keepClientData, setKeepClientData] = React.useState(true)
   const [removeImages, setRemoveImages] = React.useState(false)
-  const [wipeAppConfig, setWipeAppConfig] = React.useState(false)
-  const [wipeCaches, setWipeCaches] = React.useState(false)
 
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [confirmText, setConfirmText] = React.useState("")
@@ -99,8 +96,10 @@ export function UninstallSection() {
   const validInstalls = installs.filter((i) => i.variant !== "unknown")
   const noInstalls = validInstalls.length === 0
   const inFlight = uninstallStatus === "running"
-  const terminal =
-    uninstallStatus === "succeeded" || uninstallStatus === "failed"
+  // Only the failure branch renders inline now — success is surfaced via
+  // <UninstallSuccessDialog/> at the App root so it survives the
+  // immediate route-out to WelcomeScreen when `installs` empties.
+  const showFailure = uninstallStatus === "failed"
 
   const handleConfirm = async () => {
     setConfirmOpen(false)
@@ -109,8 +108,6 @@ export function UninstallSection() {
       variant,
       keepClientData,
       removeImages,
-      wipeAppConfig,
-      wipeCaches,
     })
   }
 
@@ -137,9 +134,7 @@ export function UninstallSection() {
       <div
         className={cn(
           "flex flex-col gap-4 rounded-md border p-4",
-          terminal && uninstallStatus === "succeeded"
-            ? "border-emerald-500/40 bg-emerald-500/5"
-            : "border-rose-500/40 bg-rose-500/5"
+          "border-rose-500/40 bg-rose-500/5"
         )}
       >
         {/* ── Pre-uninstall: variant + options + button ─────────────── */}
@@ -191,7 +186,7 @@ export function UninstallSection() {
                 checked={keepClientData}
                 onCheckedChange={setKeepClientData}
                 label="Keep client data volume"
-                description="Skip wiping the ~6GB extracted maps/DBCs so the next install is fast."
+                description="Skip wiping the ~6GB extracted maps/DBCs so the next install is fast. Only reused if you reinstall the same variant to the same path."
                 recommended
               />
               <OptionCheckbox
@@ -200,19 +195,13 @@ export function UninstallSection() {
                 label="Remove Docker images"
                 description="Saves ~3-5GB but re-pulling on the next install takes a while."
               />
-              <OptionCheckbox
-                checked={wipeAppConfig}
-                onCheckedChange={setWipeAppConfig}
-                label="Wipe app settings"
-                description="Clears your selected character, dismissed notices, audio prefs, etc. Use for a fresh-install test."
-              />
-              <OptionCheckbox
-                checked={wipeCaches}
-                onCheckedChange={setWipeCaches}
-                label="Wipe enrichment caches"
-                description="Clears item icons / tooltips / talents extracted from your WoW client. They're slow to re-extract; keep them if you'll reinstall."
-              />
             </div>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Always wiped: your selected character, character switcher,
+              dismissed notices, and the icon / tooltip / talent caches.
+              Always kept: audio, cursor, WoW client folder, and other
+              app-level preferences.
+            </p>
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <Button
@@ -250,32 +239,23 @@ export function UninstallSection() {
           </>
         )}
 
-        {/* ── Done: success or failure summary ──────────────────────── */}
-        {terminal && (
+        {/* ── Failure: summary + console + dismiss ──────────────────── */}
+        {/* Success is intentionally NOT rendered here — see
+            `showFailure` comment above and `<UninstallSuccessDialog/>`. */}
+        {showFailure && (
           <>
             <div className="flex items-start gap-3">
-              {uninstallStatus === "succeeded" ? (
-                <CheckCircleIcon className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              ) : (
-                <WarningCircleIcon className="mt-0.5 size-5 shrink-0 text-rose-600 dark:text-rose-400" />
-              )}
+              <WarningCircleIcon className="mt-0.5 size-5 shrink-0 text-rose-600 dark:text-rose-400" />
               <div className="flex-1 space-y-1">
                 <div className="text-sm font-semibold leading-tight">
-                  {uninstallStatus === "succeeded"
-                    ? "Uninstall complete"
-                    : `Uninstall failed (exit ${uninstallExitCode ?? "?"})`}
+                  Uninstall failed (exit {uninstallExitCode ?? "?"})
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {uninstallStatus === "succeeded"
-                    ? "Your install is gone. You're ready for a fresh install whenever you are."
-                    : "Check the log below — you may need to stop containers or remove volumes by hand."}
+                  Check the log below — you may need to stop containers or
+                  remove volumes by hand.
                 </p>
               </div>
             </div>
-
-            {uninstallStatus === "succeeded" && (
-              <SteamCleanupReminder />
-            )}
 
             <InstallConsole
               entries={uninstallLog}
@@ -312,12 +292,11 @@ export function UninstallSection() {
                     )}
                   </li>
                   {removeImages && <li>Removes downloaded Docker images</li>}
-                  {wipeAppConfig && (
-                    <li>Wipes The Lab's app settings (selected character, etc.)</li>
-                  )}
-                  {wipeCaches && (
-                    <li>Wipes extracted icons / tooltips / talents</li>
-                  )}
+                  <li>
+                    Clears your selected character, switcher, and dismissed
+                    notices from The Lab
+                  </li>
+                  <li>Wipes the icon / tooltip / talent caches</li>
                 </ul>
                 <div className="space-y-1.5">
                   <Label htmlFor="uninstall-confirm" className="text-xs">
@@ -393,42 +372,3 @@ function OptionCheckbox({
   )
 }
 
-/**
- * Steam cleanup reminder. Shown after a successful uninstall.
- *
- * Why not auto-remove Steam shortcuts:
- *   - `shortcuts.vdf` is the only authoritative location, and Steam
- *     keeps a live in-memory copy while running. Edits made under a
- *     running Steam get clobbered on exit.
- *   - Forcing the user to close Steam mid-uninstall is rude and easy
- *     to get wrong. A reminder + the Steam UI's right-click flow is
- *     low-friction and safe.
- */
-function SteamCleanupReminder() {
-  return (
-    <div className="flex items-start gap-3 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-sky-900 dark:text-sky-200">
-      <SteamLogoIcon className="mt-0.5 size-5 shrink-0" />
-      <div className="flex-1 space-y-1.5 text-xs">
-        <div className="font-semibold">One more cleanup step — in Steam</div>
-        <p className="leading-snug text-sky-900/80 dark:text-sky-200/80">
-          We can't safely edit Steam's library while it's running. To
-          finish a clean uninstall:
-        </p>
-        <ol className="list-decimal space-y-0.5 pl-5 leading-snug text-sky-900/80 dark:text-sky-200/80">
-          <li>
-            Open Steam, find your <strong>WoW 3.3.5a</strong> entry, right-click
-            → Manage → <em>Remove non-Steam game from your library</em>.
-          </li>
-          <li>
-            If you are deleting <strong>The Lab</strong>, you may also
-            remove it from Steam this way.
-          </li>
-          <li>
-            Your WoW 3.3.5a client folder is still on disk — keep it for
-            next time, or delete it by hand when you're done with WoW.
-          </li>
-        </ol>
-      </div>
-    </div>
-  )
-}

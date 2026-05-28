@@ -482,6 +482,11 @@ pub async fn start_install(
 
     let app_done = app.clone();
     let target_for_cleanup = target_dir.clone();
+    // Capture credentials for the success-side persist. We can't reach
+    // into `request` from inside the spawned closure (it'd move), so
+    // pull them out here. Cheap clones — short strings.
+    let admin_user_for_save = request.admin_user.clone();
+    let admin_pass_for_save = request.admin_pass.clone();
     tokio::spawn(async move {
         let result = child.wait().await;
         // Clear PID first so the UI never sees "running" with no live process.
@@ -504,6 +509,20 @@ pub async fn start_install(
 
                 if cancelled {
                     perform_cleanup(&app_done, &target_for_cleanup).await;
+                } else if status.success() {
+                    // Persist the admin credentials the user just used to
+                    // bootstrap, so soap.rs can authenticate every GM
+                    // command (teleport, additem, npcbot spawn, …) as that
+                    // exact account instead of falling back to admin/admin.
+                    // Best-effort: a save failure is logged but doesn't
+                    // fail the install. The user can still play; SOAP-driven
+                    // features just degrade to needing the default account.
+                    let mut s = crate::app_settings::load();
+                    s.admin_user = Some(admin_user_for_save);
+                    s.admin_pass = Some(admin_pass_for_save);
+                    if let Err(e) = crate::app_settings::save(&s) {
+                        log::warn!("save admin credentials post-install: {e}");
+                    }
                 }
 
                 let _ = app_done.emit(

@@ -17,6 +17,7 @@ import {
   CompassIcon,
   DatabaseIcon,
   GavelIcon,
+  GlobeHemisphereWestIcon,
   HouseIcon,
   PackageIcon,
   RobotIcon,
@@ -39,13 +40,19 @@ function buildNavNodes(_ahbotNeedsConfig: boolean): NavNode[] {
     { kind: "item", title: "Dashboard", icon: <HouseIcon />, page: "dashboard" },
     { kind: "item", title: "Teleport", icon: <CompassIcon />, page: "teleport" },
     {
+      kind: "item",
+      title: "World Settings",
+      icon: <GlobeHemisphereWestIcon />,
+      page: "worldSettings",
+    },
+    {
       kind: "group",
       title: "Inventory",
       icon: <PackageIcon />,
       items: [
         // Routed internally as `inventory`; display name is "Item Database".
         { title: "Item Database", icon: <DatabaseIcon />, page: "inventory" },
-        { title: "Gear Library", icon: <SwordIcon />, disabled: true },
+        { title: "Gear Library", icon: <SwordIcon />, page: "gearLibrary" },
         { title: "Auction House", icon: <GavelIcon />, page: "auctionHouse" },
       ],
     },

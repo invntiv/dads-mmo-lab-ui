@@ -266,8 +266,10 @@ export type TooltipData = {
 export type ActivePage =
   | "dashboard"
   | "modules"
+  | "worldSettings"
   | "teleport"
   | "inventory"
+  | "gearLibrary"
   | "auctionHouse"
   | "playerbots"
   | "partyPresets"

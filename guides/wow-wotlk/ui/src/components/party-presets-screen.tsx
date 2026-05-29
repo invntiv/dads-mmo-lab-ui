@@ -41,6 +41,7 @@ import { isTauri, trackedInvoke } from "@/lib/tauri"
 import {
   GEAR_SLOT_LABELS,
   parseGear,
+  parseGearSpec,
   presetBotClassId,
   talentDistribution,
   targetSummary,
@@ -473,7 +474,7 @@ function BotDetailCard({
   /** Resolved item id → {name, quality}, fetched once by the card. */
   meta: Map<number, ItemMini>
 }) {
-  const gear = React.useMemo<GearItem[]>(() => parseGear(bot.gear), [bot.gear])
+  const gearSpec = React.useMemo(() => parseGearSpec(bot.gear), [bot.gear])
   const dist = talentDistribution(bot.talents)
   const roleLabel = ROLE_LABELS[bot.role as Role] ?? bot.role
 
@@ -506,15 +507,25 @@ function BotDetailCard({
             Unknown class "{bot.class}" — this bot may not spawn.
           </div>
         )}
-        {gear.length === 0 ? (
+        {gearSpec.allAuto ? (
           <div className="px-2 py-1.5 text-xs text-muted-foreground">
-            Gear is auto-rolled for this bot's level and spec when you set
-            the party up.
+            All gear is auto-rolled for this bot's level and spec when you
+            set the party up.
           </div>
         ) : (
-          gear.map((g) => (
-            <GearRow key={g.slot} item={g} quality={meta.get(g.id)?.quality} />
-          ))
+          <>
+            {gearSpec.items.map((g) => (
+              <GearRow key={g.slot} item={g} quality={meta.get(g.id)?.quality} />
+            ))}
+            {gearSpec.autoSlots.map((slot) => (
+              <AutoGearRow key={slot} slot={slot} />
+            ))}
+            {/* Any slot the author didn't name is auto-filled too, and a
+                failed explicit equip falls back to auto — so note it. */}
+            <div className="px-2 pt-1 text-[11px] text-muted-foreground/80">
+              Unlisted slots are auto-filled.
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -547,6 +558,21 @@ function GearRow({
           {item.name ?? `Item #${item.id}`}
         </span>
       </ItemTooltip>
+    </div>
+  )
+}
+
+/** A gear slot the author left to the module (auto = true). */
+function AutoGearRow({ slot }: { slot: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded px-2 py-1 text-muted-foreground">
+      <GearSlotIcon slot={slot} className="size-4 opacity-60" />
+      <span className="min-w-0 flex-1 truncate text-sm">
+        {GEAR_SLOT_LABELS[slot] ?? slot}
+      </span>
+      <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] uppercase tracking-wide">
+        Auto
+      </span>
     </div>
   )
 }

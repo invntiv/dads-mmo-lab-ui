@@ -70,7 +70,7 @@ pub struct Character {
 
 /// Find the first install dir under $HOME starting with `wow-server` that
 /// contains a docker-compose.yml. Same logic the install.rs uses.
-fn first_install_path() -> Option<PathBuf> {
+pub(crate) fn first_install_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let entries = std::fs::read_dir(&home).ok()?;
     for entry in entries.flatten() {
@@ -96,7 +96,7 @@ fn first_install_path() -> Option<PathBuf> {
 /// - `[section]` headers (stored as `__section__` so callers can see the
 ///   active section if they care)
 /// - Quoted values: trailing `"..."` is preserved verbatim.
-fn parse_conf(path: &Path) -> HashMap<String, String> {
+pub(crate) fn parse_conf(path: &Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -300,7 +300,7 @@ fn find_database_container() -> Option<String> {
 /// Rewrite (or append) a `key = value` pair in a conf file in place.
 /// Mirrors `conf_set` in install-wow-ui.sh. Matches the key with
 /// optional leading whitespace and `=` separator.
-fn conf_set_inplace(path: &Path, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn conf_set_inplace(path: &Path, key: &str, value: &str) -> Result<(), String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut found = false;

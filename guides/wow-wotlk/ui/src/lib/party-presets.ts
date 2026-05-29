@@ -271,27 +271,76 @@ export interface GearItem {
 }
 
 /**
- * Parse a preset bot's opaque `gear` value into an ordered list of
- * {slot, id, name}. Tolerant of the `{ id, name }` shape the handoff
- * uses; silently skips malformed / id-less slots.
+ * A bot's resolved gear plan. See the gear schema in
+ * `preset_system_handoff.md`:
+ *   - `allAuto`   — no gear table at all, or `[party.bots.gear.auto]` is
+ *                   present → mod-playerbots auto-gears the whole outfit.
+ *   - `items`     — slots with an explicit `id` (the author picked them).
+ *   - `autoSlots` — slots explicitly marked `auto = true`, or malformed
+ *                   slots we fall back to auto-filling. Any slot NOT
+ *                   listed is also auto-filled at apply time; we only
+ *                   surface the ones the author named.
+ *
+ * NOTE (v1 runtime): equipping specific items isn't wired yet, so every
+ * bot is auto-geared on apply regardless of `items`. This structure is
+ * forward-looking + drives the popover/editor display today.
  */
-export function parseGear(gear: unknown): GearItem[] {
-  if (!gear || typeof gear !== "object") return []
+export interface ParsedGear {
+  allAuto: boolean
+  items: GearItem[]
+  autoSlots: string[]
+}
+
+/** The pseudo-slot key that signals "auto-gear the whole bot". */
+const GEAR_AUTO_KEY = "auto"
+
+export function parseGearSpec(gear: unknown): ParsedGear {
+  if (!gear || typeof gear !== "object") {
+    return { allAuto: true, items: [], autoSlots: [] }
+  }
   const table = gear as Record<string, unknown>
-  const out: GearItem[] = []
+  // `[party.bots.gear.auto]` (or `auto = true`) → whole-bot auto-gear.
+  if (table[GEAR_AUTO_KEY] != null) {
+    return { allAuto: true, items: [], autoSlots: [] }
+  }
+
+  const items: GearItem[] = []
+  const autoSlots: string[] = []
   for (const slot of GEAR_SLOT_ORDER) {
     const raw = table[slot]
     if (!raw || typeof raw !== "object") continue
-    const cell = raw as { id?: unknown; name?: unknown }
+    const cell = raw as { id?: unknown; name?: unknown; auto?: unknown }
+    if (cell.auto === true) {
+      autoSlots.push(slot)
+      continue
+    }
     const id = typeof cell.id === "number" ? cell.id : Number(cell.id)
-    if (!Number.isFinite(id) || id <= 0) continue
-    out.push({
-      slot,
-      id,
-      name: typeof cell.name === "string" ? cell.name : undefined,
-    })
+    if (Number.isFinite(id) && id > 0) {
+      items.push({
+        slot,
+        id,
+        name: typeof cell.name === "string" ? cell.name : undefined,
+      })
+    } else {
+      // Malformed slot (no usable id, not flagged auto) → fall back to
+      // auto-fill rather than dropping the slot entirely.
+      autoSlots.push(slot)
+    }
   }
-  return out
+
+  // A gear table that named nothing recognizable is just "all auto".
+  if (items.length === 0 && autoSlots.length === 0) {
+    return { allAuto: true, items, autoSlots }
+  }
+  return { allAuto: false, items, autoSlots }
+}
+
+/**
+ * Explicit gear items only (slots with a real `id`). Convenience wrapper
+ * over `parseGearSpec` for the id-resolution + mismatch-check paths.
+ */
+export function parseGear(gear: unknown): GearItem[] {
+  return parseGearSpec(gear).items
 }
 
 /**

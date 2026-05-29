@@ -103,6 +103,41 @@ main_hand, off_hand, ranged
 
 All slots optional. Parser should not require `shirt` or `tabard`. A 2H weapon (staff, 2H sword, etc.) means `off_hand` is omitted — parser should validate this rather than auto-clear.
 
+## Gear: auto vs. explicit (+ fallback)
+
+Gear resolution is intentionally forgiving so a preset always produces a fully-equipped bot, even when item data is partial, wrong, or missing. The ID is the source of truth; `name` is advisory (human-readable only). There are three ways to express a bot's gear:
+
+**1. Fully automatic.** Omit the gear tables entirely, or add the `auto` pseudo-slot. Both mean "let mod-playerbots `autogear` pick the whole outfit for this bot's class/spec/level."
+
+```toml
+[[party.bots]]
+role = "tank"
+class = "warrior"
+level = 54
+talents = "000000-203023-00000"
+spec = "protection"
+
+[party.bots.gear.auto]
+# (empty table — apply role/class/talents, auto-gear everything)
+```
+
+**2. Mixed (some explicit, rest auto).** Name the slots you care about with an `id`; mark a slot `auto = true` to be explicit about auto-filling it, or just omit it (omitted slots are auto-filled too).
+
+```toml
+[party.bots.gear.back]
+auto = true                       # explicitly auto-filled
+
+[party.bots.gear.chest]
+id = 12647
+name = "Imperial Plate Chest"     # advisory; the id wins
+```
+
+**3. Fully explicit.** Every slot carries an `id` (the original v1 form).
+
+**Fallback rule (the safety net).** When applying a preset, any explicit slot that fails to equip — wrong slot for the item, item missing from the server's `item_template`, malformed entry, not equippable by that class/level — falls back to the auto-gear kit for that slot. A bot never ends up with *less* gear because of a bad entry; worst case it auto-gears. Unlisted slots are always auto-filled.
+
+> **v1 runtime note:** equipping *specific* items isn't wired yet (mod-playerbots' `outfit equip` only equips items already in the bot's bags, so a specific-gear path needs an item-grant step first). So today every recruited bot is auto-geared on apply regardless of explicit `id`s — i.e. the fallback is currently the *only* path. The schema above is forward-looking; explicit `id`s are parsed, preserved, displayed, and ID↔name-validated now, and will be honored once the equip path lands. `[party.bots.gear.auto]` and `auto = true` are recognized today and suppress the "specific gear isn't applied yet" import warning.
+
 ## Talent URL Parsing
 
 Support three input formats from authors:

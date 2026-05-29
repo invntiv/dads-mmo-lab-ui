@@ -8,6 +8,7 @@ mod character_backup;
 mod client_assets;
 mod controller;
 mod dashboard;
+mod gearsets;
 mod install;
 mod inventory;
 mod modules;
@@ -23,6 +24,7 @@ mod talent_harvest;
 pub mod talent_trees;
 mod teleport;
 mod uninstall;
+mod worldsettings;
 mod wow_client;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -136,9 +138,16 @@ pub fn run() {
             presets::export_party_preset_toml,
             presets::import_party_preset_toml,
             presets::save_preset_toml,
+            gearsets::save_gear_set,
+            gearsets::list_gear_sets,
+            gearsets::delete_gear_set,
+            gearsets::export_gear_set_toml,
+            gearsets::import_gear_set_toml,
             steamos::steamos_status,
             steamos::acknowledge_steamos_version,
             steamos::run_steamos_fix,
+            worldsettings::get_world_settings,
+            worldsettings::set_world_settings,
             character_backup::lookup_account,
             character_backup::list_account_characters,
             character_backup::backup_characters,

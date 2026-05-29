@@ -153,7 +153,7 @@ fn presets_dir() -> Result<PathBuf, String> {
 
 /// Lowercase, collapse non-alphanumerics to single dashes, trim. Empty
 /// input falls back to "preset".
-fn slugify(name: &str) -> String {
+pub(crate) fn slugify(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
     for ch in name.chars() {
@@ -190,7 +190,7 @@ fn unique_id(dir: &PathBuf, slug: &str) -> String {
 }
 
 /// Guard against path traversal in ids coming from the frontend.
-fn id_is_safe(id: &str) -> bool {
+pub(crate) fn id_is_safe(id: &str) -> bool {
     !id.is_empty()
         && id
             .chars()
@@ -378,7 +378,7 @@ pub fn import_party_preset_toml(toml_text: String) -> Result<ImportResult, Strin
             }
         }
 
-        if bot.gear.is_some() {
+        if bot_has_explicit_gear(bot) {
             any_explicit_gear = true;
         }
     }
@@ -436,6 +436,22 @@ pub fn import_party_preset_toml(toml_text: String) -> Result<ImportResult, Strin
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+/// True if any bot names at least one EXPLICIT gear slot (a `[…gear.<slot>]`
+/// table carrying an `id`). The `auto` pseudo-slot and `auto = true` slots
+/// don't count — a pure-auto preset shouldn't trigger the "specific gear
+/// isn't applied yet" warning. See the gear schema in
+/// `preset_system_handoff.md`.
+fn bot_has_explicit_gear(bot: &BotSpec) -> bool {
+    let Some(toml::Value::Table(gear)) = &bot.gear else {
+        return false;
+    };
+    gear.iter().any(|(slot, v)| {
+        slot != "auto"
+            && matches!(v, toml::Value::Table(t)
+                if t.get("id").and_then(|x| x.as_integer()).is_some())
+    })
+}
 
 /// Pull every `(id, name)` gear pair out of a parsed preset's bots so we
 /// can cross-check IDs ↔ names against the live item DB.

@@ -11,6 +11,7 @@ import { DashboardShell } from "@/components/dashboard-shell"
 import { HelpScreen } from "@/components/help-screen"
 import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
+import { GearLibraryScreen } from "@/components/gear-library-screen"
 import { InventoryScreen } from "@/components/inventory-screen"
 import { PartyPresetsScreen } from "@/components/party-presets-screen"
 import { PlayerbotsScreen } from "@/components/playerbots-screen"
@@ -19,6 +20,7 @@ import { SettingsScreen } from "@/components/settings-screen"
 import { SteamosFixScreen } from "@/components/steamos-fix-screen"
 import { AuctionHouseScreen } from "@/components/auction-house-screen"
 import { TeleportScreen } from "@/components/teleport-screen"
+import { WorldSettingsScreen } from "@/components/world-settings-screen"
 import { UninstallSuccessDialog } from "@/components/uninstall-success-dialog"
 import {
   ServerStateProvider,
@@ -85,7 +87,9 @@ function AppShell() {
   const isPagedView =
     !showInstallScreen && !showServerActionScreen && installed
   const showTeleport = isPagedView && activePage === "teleport"
+  const showWorldSettings = isPagedView && activePage === "worldSettings"
   const showInventory = isPagedView && activePage === "inventory"
+  const showGearLibrary = isPagedView && activePage === "gearLibrary"
   const showAuctionHouse = isPagedView && activePage === "auctionHouse"
   const showPlayerbots = isPagedView && activePage === "playerbots"
   const showPartyPresets = isPagedView && activePage === "partyPresets"
@@ -110,8 +114,12 @@ function AppShell() {
     mainContent = <ServerControlScreen />
   } else if (showTeleport) {
     mainContent = <TeleportScreen />
+  } else if (showWorldSettings) {
+    mainContent = <WorldSettingsScreen />
   } else if (showInventory) {
     mainContent = <InventoryScreen />
+  } else if (showGearLibrary) {
+    mainContent = <GearLibraryScreen />
   } else if (showAuctionHouse) {
     mainContent = <AuctionHouseScreen />
   } else if (showPlayerbots) {

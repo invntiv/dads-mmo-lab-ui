@@ -5562,6 +5562,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
+ "toml 0.8.2",
  "wow-blp",
  "wow-mpq",
  "wow_dbc",

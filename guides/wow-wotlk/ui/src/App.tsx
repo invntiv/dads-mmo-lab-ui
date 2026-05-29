@@ -12,9 +12,11 @@ import { HelpScreen } from "@/components/help-screen"
 import { InstallOnboarding } from "@/components/install-onboarding"
 import { InstallProgressScreen } from "@/components/install-progress-screen"
 import { InventoryScreen } from "@/components/inventory-screen"
+import { PartyPresetsScreen } from "@/components/party-presets-screen"
 import { PlayerbotsScreen } from "@/components/playerbots-screen"
 import { ServerControlScreen } from "@/components/server-control-screen"
 import { SettingsScreen } from "@/components/settings-screen"
+import { SteamosFixScreen } from "@/components/steamos-fix-screen"
 import { AuctionHouseScreen } from "@/components/auction-house-screen"
 import { TeleportScreen } from "@/components/teleport-screen"
 import { UninstallSuccessDialog } from "@/components/uninstall-success-dialog"
@@ -86,6 +88,7 @@ function AppShell() {
   const showInventory = isPagedView && activePage === "inventory"
   const showAuctionHouse = isPagedView && activePage === "auctionHouse"
   const showPlayerbots = isPagedView && activePage === "playerbots"
+  const showPartyPresets = isPagedView && activePage === "partyPresets"
   const showBotDetail = isPagedView && activePage === "botDetail"
   const showSettings = isPagedView && activePage === "settings"
   const showDashboard = isPagedView && activePage === "dashboard"
@@ -94,6 +97,11 @@ function AppShell() {
   // when people need it).
   const showHelp =
     !showInstallScreen && !showServerActionScreen && activePage === "help"
+  // SteamOS Update Fix is always reachable for the same reason: a broken
+  // post-update Docker is precisely when the server won't run, and the
+  // user needs to get to the fix regardless of install state.
+  const showSteamosFix =
+    !showInstallScreen && !showServerActionScreen && activePage === "steamosFix"
 
   let mainContent
   if (showInstallScreen) {
@@ -108,12 +116,16 @@ function AppShell() {
     mainContent = <AuctionHouseScreen />
   } else if (showPlayerbots) {
     mainContent = <PlayerbotsScreen />
+  } else if (showPartyPresets) {
+    mainContent = <PartyPresetsScreen />
   } else if (showBotDetail) {
     mainContent = <BotDetailScreen />
   } else if (showSettings) {
     mainContent = <SettingsScreen />
   } else if (showHelp) {
     mainContent = <HelpScreen />
+  } else if (showSteamosFix) {
+    mainContent = <SteamosFixScreen />
   } else if (showDashboard) {
     // DashboardShell owns the banner row + the [Player View] / [My
     // Party] tab structure. Banners are part of the shell so both

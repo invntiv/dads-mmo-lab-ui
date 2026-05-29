@@ -417,24 +417,36 @@ pub async fn add_bot_to_party(args: AddBotToPartyArgs) -> Result<AddBotToPartyRe
         }),
     }
 
-    // Step 4 — apply talents via whisper.
-    let talents_cmd = format!(
-        "dml_whisper {} {} talents apply {}",
-        quote_if_needed(&args.character_name),
-        quote_if_needed(&bot_info.name),
-        args.wowhead_link
-    );
-    match soap::execute_command(&talents_cmd).await {
-        Ok(_) => steps.push(StepResult {
+    // Step 4 — apply talents via whisper. An empty link means the
+    // preset carried no talent build (e.g. a low-level bot, or an
+    // import whose talents couldn't be parsed); skip the whisper and
+    // let mod-playerbots auto-pick rather than firing `talents apply `
+    // (which the mod rejects as an invalid link).
+    if args.wowhead_link.trim().is_empty() {
+        steps.push(StepResult {
             label: "Apply talents".to_string(),
             ok: true,
-            detail: String::new(),
-        }),
-        Err(e) => steps.push(StepResult {
-            label: "Apply talents".to_string(),
-            ok: false,
-            detail: e,
-        }),
+            detail: "No build specified — bot auto-picks talents.".to_string(),
+        });
+    } else {
+        let talents_cmd = format!(
+            "dml_whisper {} {} talents apply {}",
+            quote_if_needed(&args.character_name),
+            quote_if_needed(&bot_info.name),
+            args.wowhead_link
+        );
+        match soap::execute_command(&talents_cmd).await {
+            Ok(_) => steps.push(StepResult {
+                label: "Apply talents".to_string(),
+                ok: true,
+                detail: String::new(),
+            }),
+            Err(e) => steps.push(StepResult {
+                label: "Apply talents".to_string(),
+                ok: false,
+                detail: e,
+            }),
+        }
     }
 
     // Step 5 — autogear.

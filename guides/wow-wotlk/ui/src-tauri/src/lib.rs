@@ -12,8 +12,10 @@ mod install;
 mod inventory;
 mod modules;
 mod playerbots;
+mod presets;
 mod server;
 mod sfx;
+mod steamos;
 mod soap;
 mod steam_shortcuts;
 mod talent_dataset;
@@ -128,6 +130,15 @@ pub fn run() {
             playerbots::get_user_party,
             playerbots::kick_bot_from_party,
             playerbots::bring_bot_online,
+            presets::save_party_preset,
+            presets::list_party_presets,
+            presets::delete_party_preset,
+            presets::export_party_preset_toml,
+            presets::import_party_preset_toml,
+            presets::save_preset_toml,
+            steamos::steamos_status,
+            steamos::acknowledge_steamos_version,
+            steamos::run_steamos_fix,
             character_backup::lookup_account,
             character_backup::list_account_characters,
             character_backup::backup_characters,

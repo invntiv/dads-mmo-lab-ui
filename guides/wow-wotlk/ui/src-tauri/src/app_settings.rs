@@ -66,6 +66,14 @@ pub struct AppSettings {
     /// default when DML_ADMIN_USER / DML_ADMIN_PASS weren't set).
     pub admin_user: Option<String>,
     pub admin_pass: Option<String>,
+    /// Last SteamOS version string (`VERSION_ID (BUILD_ID)`) the user
+    /// acknowledged. Compared against the live value on launch to detect
+    /// when a SteamOS update has been applied — which routinely wipes
+    /// Docker and breaks the pacman keyring, so we surface the "Fix after
+    /// SteamOS update" flow. None on a fresh install / non-SteamOS host;
+    /// initialised to the current version on first launch so a baseline
+    /// exists to diff against. App-level (survives uninstall).
+    pub last_steamos_version: Option<String>,
 }
 
 fn settings_path() -> Option<PathBuf> {

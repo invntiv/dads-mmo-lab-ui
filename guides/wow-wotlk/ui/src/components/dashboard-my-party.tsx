@@ -1,6 +1,7 @@
 import * as React from "react"
 import {
   ArrowLeftIcon,
+  FloppyDiskIcon,
   MagnifyingGlassIcon,
   PaperPlaneTiltIcon,
   PlugIcon,
@@ -24,6 +25,8 @@ import {
   AddToPartyWizard,
   type AddToPartySelection,
 } from "@/components/add-to-party-wizard"
+import { SavePartyDialog } from "@/components/save-party-dialog"
+import { Button } from "@/components/ui/button"
 import { useServerState } from "@/components/server-state-context"
 import { isTauri, trackedInvoke } from "@/lib/tauri"
 import {
@@ -69,8 +72,9 @@ interface PartyMember {
 }
 
 export function DashboardMyParty() {
-  const { selectedCharacter, installComplete } = useServerState()
+  const { selectedCharacter, installComplete, setActivePage } = useServerState()
   const [wizardOpen, setWizardOpen] = React.useState(false)
+  const [saveOpen, setSaveOpen] = React.useState(false)
   const [party, setParty] = React.useState<PartyMember[]>([])
 
   const playerGuid = selectedCharacter?.guid ?? null
@@ -199,6 +203,18 @@ export function DashboardMyParty() {
     // column the same width so nothing visually shifts.
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 pt-3 pb-6 lg:px-6">
       <UserPartyHeader character={selectedCharacter} installed={installComplete} />
+      {bots.length > 0 && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSaveOpen(true)}
+          >
+            <FloppyDiskIcon className="size-4" weight="fill" />
+            Save party
+          </Button>
+        </div>
+      )}
       <div className="space-y-2">
         {Array.from({ length: PARTY_SLOTS }, (_, i) => {
           const bot = bots[i]
@@ -230,6 +246,20 @@ export function DashboardMyParty() {
         onOpenChange={setWizardOpen}
         characterLevel={selectedCharacter?.level}
         onConfirm={handleConfirm}
+      />
+      <SavePartyDialog
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        bots={bots.map((b) => ({
+          name: b.name,
+          classId: b.classId,
+          level: b.level,
+          specTabIndex: b.specTabIndex,
+          talentDistribution: b.talentDistribution,
+        }))}
+        playerClassId={selectedCharacter?.class ?? null}
+        playerSpecTabIndex={party.find((m) => m.isLeader)?.specTabIndex ?? null}
+        onSaved={() => setActivePage("partyPresets")}
       />
     </div>
   )

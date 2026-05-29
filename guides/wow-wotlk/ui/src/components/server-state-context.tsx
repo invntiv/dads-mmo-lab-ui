@@ -270,8 +270,10 @@ export type ActivePage =
   | "inventory"
   | "auctionHouse"
   | "playerbots"
+  | "partyPresets"
   | "botDetail"
   | "settings"
+  | "steamosFix"
   | "help"
 
 /** The bot the Bot Detail page is currently rendering. Set by the

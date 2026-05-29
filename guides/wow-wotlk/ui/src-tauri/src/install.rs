@@ -479,8 +479,20 @@ pub async fn start_install(
     // these before doing anything else, so all of the subprocess's pipe
     // output is drained and emitted before our own system lines (cleanup,
     // done) get a chance to interleave.
-    let stdout_handle = tokio::spawn(forward_lines(stdout, app.clone(), "stdout"));
-    let stderr_handle = tokio::spawn(forward_lines(stderr, app.clone(), "stderr"));
+    let stdout_handle = tokio::spawn(forward_lines(
+        stdout,
+        app.clone(),
+        "stdout",
+        EVT_OUTPUT,
+        EVT_SECTION,
+    ));
+    let stderr_handle = tokio::spawn(forward_lines(
+        stderr,
+        app.clone(),
+        "stderr",
+        EVT_OUTPUT,
+        EVT_SECTION,
+    ));
 
     let app_done = app.clone();
     let target_for_cleanup = target_dir.clone();
@@ -768,10 +780,16 @@ async fn perform_cleanup(app: &AppHandle, target: &Path) {
 /// `transient` flag to decide whether to append to history or replace the
 /// pending update slot. `\r\n` pairs are normalised to a single final
 /// emission.
-async fn forward_lines<R: AsyncRead + Unpin>(
+/// Forward subprocess output as `output_evt` / `section_evt` events.
+/// Generic over the event names so other long-running scripts (the
+/// SteamOS-update fix) can stream through the same plumbing with their
+/// own event channel instead of `install:*`.
+pub(crate) async fn forward_lines<R: AsyncRead + Unpin>(
     reader: R,
     app: AppHandle,
     stream: &'static str,
+    output_evt: &'static str,
+    section_evt: &'static str,
 ) {
     let mut reader = BufReader::new(reader);
     let mut buf = [0u8; 4096];
@@ -800,7 +818,7 @@ async fn forward_lines<R: AsyncRead + Unpin>(
                     .unwrap_or(rest)
                     .to_string();
                 let _ = app.emit(
-                    EVT_SECTION,
+                    section_evt,
                     SectionEvent {
                         stage: "start",
                         title: Some(title),
@@ -810,7 +828,7 @@ async fn forward_lines<R: AsyncRead + Unpin>(
             }
             if trimmed == SECTION_END_MARKER {
                 let _ = app.emit(
-                    EVT_SECTION,
+                    section_evt,
                     SectionEvent {
                         stage: "end",
                         title: None,
@@ -821,7 +839,7 @@ async fn forward_lines<R: AsyncRead + Unpin>(
         }
 
         let _ = app.emit(
-            EVT_OUTPUT,
+            output_evt,
             OutputEvent {
                 stream,
                 line: stripped,

@@ -9,6 +9,7 @@ import {
   PowerIcon,
   QuestionIcon,
   TipJarIcon,
+  WrenchIcon,
 } from "@phosphor-icons/react"
 
 import {
@@ -27,7 +28,9 @@ import {
 import { PreInstallTooltip } from "@/components/pre-install-tooltip"
 import { useServerState } from "@/components/server-state-context"
 import { getSfxPrefs, playSfx } from "@/lib/sfx"
+import { useSteamOsStatus } from "@/lib/steamos-status"
 import { isTauri } from "@/lib/tauri"
+import { cn } from "@/lib/utils"
 
 /**
  * Static footer nav: Settings, More (Get Help + Support Us in a popover),
@@ -40,6 +43,11 @@ export function NavSecondary({
   ...props
 }: React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
   const { installed, activePage, setActivePage } = useServerState()
+  const { status: steamos } = useSteamOsStatus()
+  // The fix entry only makes sense on a SteamOS host; the pulsing dot
+  // calls it out once an update has actually landed.
+  const showSteamosFix = steamos?.isSteamos ?? false
+  const steamosUpdatePending = steamos?.updatePending ?? false
 
   const handleQuit = React.useCallback(async () => {
     if (!isTauri()) return
@@ -85,16 +93,43 @@ export function NavSecondary({
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton tooltip="More">
+                <SidebarMenuButton tooltip="More" className="relative">
                   <DotsThreeOutlineIcon />
                   <span>More</span>
+                  {steamosUpdatePending && (
+                    // Amber dot mirrors the "needs attention" cue used
+                    // elsewhere; clears once the fix runs (or is dismissed).
+                    <span className="absolute right-2 top-1.5 flex size-2">
+                      <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                      <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+                    </span>
+                  )}
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 side="right"
                 align="end"
-                className="w-48 rounded-lg"
+                className="w-56 rounded-lg"
               >
+                {showSteamosFix && (
+                  <DropdownMenuItem
+                    onSelect={() => setActivePage("steamosFix")}
+                    className={cn(
+                      steamosUpdatePending &&
+                        "text-amber-600 focus:text-amber-600 dark:text-amber-400 dark:focus:text-amber-400"
+                    )}
+                  >
+                    <WrenchIcon
+                      className={cn(
+                        !steamosUpdatePending && "text-muted-foreground"
+                      )}
+                    />
+                    <span className="flex-1">SteamOS Update Fix</span>
+                    {steamosUpdatePending && (
+                      <span className="size-2 rounded-full bg-amber-500" />
+                    )}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onSelect={() => setActivePage("help")}>
                   <QuestionIcon className="text-muted-foreground" />
                   <span>Get Help</span>

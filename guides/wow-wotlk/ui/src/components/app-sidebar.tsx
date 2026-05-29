@@ -58,7 +58,7 @@ function buildNavNodes(_ahbotNeedsConfig: boolean): NavNode[] {
         {
           title: "Party Presets",
           icon: <UsersThreeIcon />,
-          disabled: true,
+          page: "partyPresets",
         },
       ],
     },

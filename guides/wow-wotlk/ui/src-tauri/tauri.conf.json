@@ -42,6 +42,7 @@
       "../../install-wow-ui.sh": "install-wow-ui.sh",
       "../../uninstall-wow-ui.sh": "uninstall-wow-ui.sh",
       "../../dml-bootstrap.sh": "dml-bootstrap.sh",
+      "../../fix-after-update-ui.sh": "fix-after-update-ui.sh",
       "../../eluna-scripts/dml_addclass.lua": "eluna-scripts/dml_addclass.lua",
       "../../eluna-scripts/dml_gm.lua": "eluna-scripts/dml_gm.lua",
       "../../eluna-scripts/dml_login.lua": "eluna-scripts/dml_login.lua",

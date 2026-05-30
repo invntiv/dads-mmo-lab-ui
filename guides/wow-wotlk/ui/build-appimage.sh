@@ -59,6 +59,42 @@ stable="$BUNDLE_DIR/$STABLE_NAME"
 cp -f "$versioned" "$stable"
 chmod +x "$stable"
 
+# ── OTA release manifest (latest.json) ──────────────────────────────────
+# The Tauri updater polls
+#   https://github.com/invntiv/dads-mmo-lab-ui/releases/latest/download/latest.json
+# and verifies the downloaded AppImage against the signature embedded here.
+# We generate it next to the artifacts; uploading it (plus the versioned
+# AppImage) to a GitHub release tagged `v<version>` is the only manual step.
+# Public repo that HOSTS RELEASES ONLY (latest.json + the AppImage). Source
+# stays in the private repo; a private repo can't serve public OTA updates,
+# so artifacts live here. Keep this in sync with the updater endpoint in
+# src-tauri/tauri.conf.json.
+GH_REPO="invntiv/the-lab"
+version="$(basename "$versioned" | sed -E 's/^TheLab_(.+)_amd64\.AppImage$/\1/')"
+sig_file="${versioned}.sig"
+if [ -f "$sig_file" ]; then
+  sig="$(tr -d '\n' < "$sig_file")"
+  notes="${DML_RELEASE_NOTES:-See the GitHub release notes for what changed.}"
+  pubdate="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  url="https://github.com/${GH_REPO}/releases/download/v${version}/TheLab_${version}_amd64.AppImage"
+  cat > "$BUNDLE_DIR/latest.json" <<JSON
+{
+  "version": "${version}",
+  "notes": "${notes}",
+  "pub_date": "${pubdate}",
+  "platforms": {
+    "linux-x86_64": {
+      "signature": "${sig}",
+      "url": "${url}"
+    }
+  }
+}
+JSON
+  echo "==> Release manifest    : $BUNDLE_DIR/latest.json"
+else
+  echo "!! No signature ($sig_file) — skipping latest.json (OTA update won't verify)."
+fi
+
 echo ""
 echo "==> Versioned artifact  : $versioned"
 echo "==> Stable distributable: $stable"
@@ -66,3 +102,6 @@ echo ""
 echo "Point Steam + teammates at the STABLE file ($STABLE_NAME)."
 echo "Its name never changes between versions, so the Steam shortcut and"
 echo "the OTA updater keep working across releases."
+echo ""
+echo "To publish an OTA update, create a GitHub release tagged v${version:-X.Y.Z} and"
+echo "upload BOTH:  $(basename "$versioned")   and   latest.json"

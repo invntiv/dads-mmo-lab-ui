@@ -11,6 +11,7 @@ mod dashboard;
 mod gearsets;
 mod install;
 mod inventory;
+mod migrations;
 mod modules;
 mod playerbots;
 mod presets;
@@ -104,6 +105,8 @@ pub fn run() {
             bootstrap::bootstrap_privileges,
             install::detect_installs,
             install::adopt_install,
+            install::analyze_install,
+            install::verify_admin_account,
             install::start_install,
             install::cancel_install,
             uninstall::start_uninstall,
@@ -132,6 +135,10 @@ pub fn run() {
             playerbots::get_user_party,
             playerbots::kick_bot_from_party,
             playerbots::bring_bot_online,
+            migrations::migrations_status,
+            migrations::run_migrations,
+            migrations::backup_current_binary,
+            migrations::restore_previous_version,
             presets::save_party_preset,
             presets::list_party_presets,
             presets::delete_party_preset,
@@ -241,6 +248,12 @@ pub fn run() {
                     }
                 }
             }
+
+            // Seed the bundled example party presets (Ragefire Chasm,
+            // Deadmines) into the user's library on first launch. Idempotent
+            // per-example and best-effort — never blocks startup.
+            presets::seed_example_presets();
+
             Ok(())
         })
         .run(tauri::generate_context!())

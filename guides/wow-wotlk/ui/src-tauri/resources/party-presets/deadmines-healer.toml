@@ -1,0 +1,51 @@
+# An example party that ships with The Lab. It's a normal preset — edit or
+# delete it however you like (deleting it won't bring it back).
+#
+# The Deadmines (Alliance, in Westfall) — recommended level ~17-26.
+# You play the healer; the bots bring a tank and three DPS for a classic
+# 5-player run. Gear is equipped automatically when the bots are summoned.
+
+schema_version = 1
+
+[preset_info]
+name = "The Deadmines — Healer"
+author = "The Lab"
+description = """
+A starter party for The Deadmines where you play the healer. The bots bring a \
+Protection Warrior tank and three DPS — a Frost Mage, a Combat Rogue, and a \
+Beast Mastery Hunter. Levels sit at the low end of the dungeon's range (19) \
+for a fair fight. Gear is auto-equipped on summon. Alternatives: a Warlock \
+works in place of the Mage, and a Feral Druid can swap in for either melee.\
+"""
+target = { type = "dungeon", name = "The Deadmines" }
+
+[party.player]
+role = "healer"
+
+[[party.bots]]
+role = "tank"
+class = "warrior"
+level = 19
+spec = "Protection"
+talents = "--0532"
+
+[[party.bots]]
+role = "dps"
+class = "mage"
+level = 19
+spec = "Frost"
+talents = "--250003"
+
+[[party.bots]]
+role = "dps"
+class = "rogue"
+level = 19
+spec = "Combat"
+talents = "-02503"
+
+[[party.bots]]
+role = "dps"
+class = "hunter"
+level = 19
+spec = "Beast Mastery"
+talents = "502012"

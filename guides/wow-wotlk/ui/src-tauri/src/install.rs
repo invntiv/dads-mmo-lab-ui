@@ -87,6 +87,15 @@ pub struct InstallRequest {
     /// recover from a crash that interrupted a near-finished install.
     #[serde(default)]
     pub resume: bool,
+    /// When true, the script runs in MIGRATE mode (`DML_MIGRATE=1`): an
+    /// existing playerbots *source* install (set up manually, outside The
+    /// Lab) gets brought up to parity — rewrite the compose override to add
+    /// SOAP + the Eluna lua mount, ensure mod-ale + the dml_*.lua bridge,
+    /// clone any chosen modules, recompile (ccache makes this cheap), then
+    /// bootstrap accounts + write the marker. Unlike a fresh install it
+    /// never wipes the dir, and unlike resume it does the parity prep first.
+    #[serde(default)]
+    pub migrate: bool,
     /// Module keys to install (e.g. `["mod-ah-bot-plus", "mod-solocraft"]`).
     /// Translated to `DML_MODULES_ADD` (comma-separated) before spawn.
     /// Ignored when `resume=true` (modules are already cloned + built).
@@ -348,6 +357,207 @@ pub fn adopt_install(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The six Eluna bridge scripts a Lab install drops into `lua_scripts/`.
+/// mod-ale loads these so SOAP can run `dml_*` commands as a player.
+/// Kept in sync with `setup_eluna()` in install-wow-ui.sh.
+const DML_LUA_SCRIPTS: &[&str] = &[
+    "dml_whisper.lua",
+    "dml_addclass.lua",
+    "dml_uninvite.lua",
+    "dml_login.lua",
+    "dml_gm.lua",
+    "dml_summon_npc.lua",
+];
+
+/// What a pre-existing (non-marker) install is missing relative to a Lab
+/// install, plus a recommended next action. Drives the resume/migrate/
+/// fresh-install routing in the UI's InstallResumeBanner.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationReport {
+    pub path: String,
+    pub variant: String,
+    /// Has a buildable AzerothCore source tree (apps/docker/Dockerfile).
+    /// Only such installs can be migrated — prebuilt/base/npcbots stacks
+    /// have nothing to compile SOAP + Eluna into.
+    pub is_playerbots_source: bool,
+    pub has_mod_ale: bool,
+    /// Subset of DML_LUA_SCRIPTS not present in `lua_scripts/`.
+    pub lua_scripts_missing: Vec<String>,
+    /// Compose override already enables SOAP (`AC_SOAP_ENABLED`).
+    pub has_soap_env: bool,
+    /// Compose override already mounts the lua_scripts dir / sets the
+    /// Eluna script path.
+    pub has_eluna_mount: bool,
+    pub worldserver_running: bool,
+    /// True when any compile-time gap exists (SOAP env / mod-ale / a lua
+    /// script). These need a worldserver rebuild to take effect.
+    pub needs_recompile: bool,
+    /// "resume" | "migrate" | "fresh_install_required" | "adopt"
+    pub recommended: String,
+}
+
+/// Inspect a detected-but-unmarked install and decide how to bring it under
+/// management. Read-only: filesystem checks plus one `docker ps`.
+#[tauri::command]
+pub fn analyze_install(path: String) -> Result<MigrationReport, String> {
+    let root = PathBuf::from(&path);
+    if !root.join("docker-compose.yml").exists() {
+        return Err(format!(
+            "{} doesn't look like a server install (no docker-compose.yml).",
+            path
+        ));
+    }
+
+    let variant = match root.file_name().and_then(|n| n.to_str()) {
+        Some("wow-server-npcbots") => "npcbots",
+        Some("wow-server-playerbots") => "playerbots",
+        Some("wow-server") => "base",
+        _ => "unknown",
+    }
+    .to_string();
+
+    // A buildable source tree is the gate for migration — the compose
+    // override's `build:` targets need this Dockerfile to add SOAP + Eluna.
+    let is_playerbots_source = root.join("apps").join("docker").join("Dockerfile").exists();
+
+    let has_mod_ale = root.join("modules").join("mod-ale").is_dir();
+
+    let lua_dir = root.join("lua_scripts");
+    let lua_scripts_missing: Vec<String> = DML_LUA_SCRIPTS
+        .iter()
+        .filter(|s| !lua_dir.join(s).exists())
+        .map(|s| s.to_string())
+        .collect();
+
+    // The override is where the fresh installer puts SOAP + the lua mount.
+    let override_text = std::fs::read_to_string(root.join("docker-compose.override.yml"))
+        .unwrap_or_default();
+    let has_soap_env = override_text.contains("AC_SOAP_ENABLED");
+    let has_eluna_mount =
+        override_text.contains("AC_ALE_SCRIPT_PATH") || override_text.contains("/lua_scripts");
+
+    let worldserver_running = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .ok()
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .to_lowercase()
+                    .contains("worldserver")
+        })
+        .unwrap_or(false);
+
+    let needs_recompile =
+        !has_soap_env || !has_mod_ale || !lua_scripts_missing.is_empty();
+
+    // Recommendation:
+    //  - not a buildable playerbots source  → can't migrate, do a fresh install.
+    //  - everything Lab-required already present → just missing the marker;
+    //    if it's up, a pure adopt (write marker) is enough.
+    //  - anything else (a real parity gap)   → migrate (prep + recompile).
+    let recommended = if !is_playerbots_source {
+        "fresh_install_required"
+    } else if !needs_recompile && has_eluna_mount {
+        if worldserver_running {
+            "adopt"
+        } else {
+            "resume"
+        }
+    } else {
+        "migrate"
+    }
+    .to_string();
+
+    Ok(MigrationReport {
+        path,
+        variant,
+        is_playerbots_source,
+        has_mod_ale,
+        lua_scripts_missing,
+        has_soap_env,
+        has_eluna_mount,
+        worldserver_running,
+        needs_recompile,
+        recommended,
+    })
+}
+
+/// Result of confirming a user's existing admin account during migration.
+/// We can prove the account *exists* and read its GM level + characters
+/// from the DB; we deliberately don't verify the password (no SRP6 in the
+/// app), so a wrong password surfaces later as a SOAP auth failure the user
+/// can fix in Settings — never as a silently-changed in-game password.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminVerifyResult {
+    pub exists: bool,
+    pub account_id: Option<u64>,
+    /// Highest GM level on any realm (RealmID -1 = all realms). 0 / absent
+    /// means the account has no GM access yet — migrate will grant level 3.
+    pub gm_level: Option<u32>,
+    pub characters: Vec<crate::character_backup::CharacterSummary>,
+}
+
+/// Confirm an account the user names during migration, and list the
+/// characters that will become visible in The Lab. Read-only.
+#[tauri::command]
+pub fn verify_admin_account(username: String) -> Result<AdminVerifyResult, String> {
+    let account = crate::character_backup::lookup_account(username)?;
+    let Some(account) = account else {
+        return Ok(AdminVerifyResult {
+            exists: false,
+            account_id: None,
+            gm_level: None,
+            characters: Vec::new(),
+        });
+    };
+
+    let gm_level = query_gm_level(account.id);
+    let characters =
+        crate::character_backup::list_account_characters(account.id).unwrap_or_default();
+
+    Ok(AdminVerifyResult {
+        exists: true,
+        account_id: Some(account.id),
+        gm_level,
+        characters,
+    })
+}
+
+/// Highest gmlevel for an account across realms. None on any DB error —
+/// caller treats that as "no confirmed GM access".
+fn query_gm_level(account_id: u64) -> Option<u32> {
+    let container = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .ok()?;
+    if !container.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&container.stdout)
+        .lines()
+        .find(|n| n.to_lowercase().contains("database"))
+        .map(|s| s.to_string())?;
+    let sql = format!(
+        "SELECT COALESCE(MAX(gmlevel), 0) FROM acore_auth.account_access WHERE id = {account_id};"
+    );
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec", &name, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", &sql,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+}
+
 /// Resolve the install-wow-ui.sh script. Resolution order:
 /// 1. `$DML_INSTALL_SCRIPT` override (testing).
 /// 2. The Tauri resource dir — this is where the script lands in a bundled
@@ -408,6 +618,7 @@ pub async fn start_install(
     let mut cmd = Command::new("bash");
     cmd.arg(&script)
         .env("DML_RESUME", if request.resume { "1" } else { "0" })
+        .env("DML_MIGRATE", if request.migrate { "1" } else { "0" })
         .env("DML_SERVER_TYPE", &request.server_type)
         .env("DML_ADMIN_USER", &request.admin_user)
         .env("DML_ADMIN_PASS", &request.admin_pass)
@@ -496,6 +707,13 @@ pub async fn start_install(
 
     let app_done = app.clone();
     let target_for_cleanup = target_dir.clone();
+    // Cleanup-on-cancel (`docker compose down -v` + `rm -rf` of the target)
+    // is only ever safe for a FRESH install — that dir is one we created
+    // this run. Resume and migrate both operate on a pre-existing install
+    // (migrate's is the user's working server, volumes full of characters),
+    // so a cancelled run there must leave everything untouched. Capture the
+    // decision now while we still own `request`.
+    let cleanup_on_cancel = !request.resume && !request.migrate;
     // Capture credentials for the success-side persist. We can't reach
     // into `request` from inside the spawned closure (it'd move), so
     // pull them out here. Cheap clones — short strings.
@@ -522,7 +740,21 @@ pub async fn start_install(
                 let cancelled = status.code().is_none();
 
                 if cancelled {
-                    perform_cleanup(&app_done, &target_for_cleanup).await;
+                    if cleanup_on_cancel {
+                        perform_cleanup(&app_done, &target_for_cleanup).await;
+                    } else {
+                        let _ = app_done.emit(
+                            EVT_OUTPUT,
+                            OutputEvent {
+                                stream: "system",
+                                line: format!(
+                                    "Cancelled — leaving {} untouched (existing install).",
+                                    target_for_cleanup.to_string_lossy()
+                                ),
+                                transient: false,
+                            },
+                        );
+                    }
                 } else if status.success() {
                     // Persist the admin credentials the user just used to
                     // bootstrap, so soap.rs can authenticate every GM

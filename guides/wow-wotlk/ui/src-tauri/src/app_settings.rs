@@ -74,11 +74,25 @@ pub struct AppSettings {
     /// initialised to the current version on first launch so a baseline
     /// exists to diff against. App-level (survives uninstall).
     pub last_steamos_version: Option<String>,
+    /// Highest data-migration id that has been applied to this user's local
+    /// data (settings, install metadata, presets, caches). The migration
+    /// runner runs every migration with id > this on launch of a new
+    /// binary, then bumps it. 0 = none applied yet; a fresh install is
+    /// baselined straight to the current target so the Updating screen
+    /// never shows on a first run. See migrations.rs.
+    pub last_applied_migration: u32,
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub fn settings_path() -> Option<PathBuf> {
     // dirs::config_dir() returns ~/.config on Linux per XDG.
     dirs::config_dir().map(|p| p.join("dads-mmo-lab").join("settings.json"))
+}
+
+/// Whether settings.json exists on disk — lets callers distinguish a
+/// genuine first launch (no file) from an existing user whose value just
+/// happens to be the default.
+pub fn exists() -> bool {
+    settings_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Read settings from disk. Returns defaults if the file is missing

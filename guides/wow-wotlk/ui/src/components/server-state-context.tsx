@@ -14,6 +14,40 @@ export type DetectedInstall = {
   complete: boolean
 }
 
+/** Summary of one character on an account, as returned by
+ * `verify_admin_account` / `list_account_characters`. */
+export type CharacterSummary = {
+  guid: number
+  name: string
+  race: number
+  class: number
+  gender: number
+  level: number
+}
+
+/** What `analyze_install` reports about a detected-but-unmarked install,
+ * plus the recommended way to bring it under management. */
+export type MigrationReport = {
+  path: string
+  variant: InstallVariant | "unknown"
+  isPlayerbotsSource: boolean
+  hasModAle: boolean
+  luaScriptsMissing: string[]
+  hasSoapEnv: boolean
+  hasElunaMount: boolean
+  worldserverRunning: boolean
+  needsRecompile: boolean
+  recommended: "resume" | "migrate" | "fresh_install_required" | "adopt"
+}
+
+/** Result of confirming a user's existing admin account during migration. */
+export type AdminVerifyResult = {
+  exists: boolean
+  accountId: number | null
+  gmLevel: number | null
+  characters: CharacterSummary[]
+}
+
 export type InstallStatus =
   | "idle"
   | "running"
@@ -71,6 +105,10 @@ export type OnboardingChoices = {
    * Used by the "Finish setup" banner on the dashboard when a crash
    * left an install partial. */
   resume?: boolean
+  /** Bring a hand-built server up to Lab parity (SOAP + Eluna + AHBot +
+   * marker) and recompile, without wiping the existing install. Set by the
+   * Migration wizard. Mutually exclusive with `resume`. */
+  migrate?: boolean
   /** Module keys to clone + compile in (e.g. `["mod-ah-bot-plus", "mod-solocraft"]`). */
   modules?: string[]
   /** Per-module config — only ones the user actually went through a config step for. */
@@ -298,6 +336,12 @@ type ServerState = {
   /** Mark an externally-installed (non-UI) server as a complete, managed
    * install — writes the metadata marker without re-running bootstrap. */
   adoptInstall: () => Promise<void>
+  /** Inspect a detected-but-unmarked install and report what it's missing
+   * relative to a Lab install + the recommended next action. */
+  analyzeInstall: (path: string) => Promise<MigrationReport>
+  /** Confirm an existing admin account during migration and list the
+   * characters that will become visible in The Lab. */
+  verifyAdminAccount: (username: string) => Promise<AdminVerifyResult>
 
   // Onboarding modal
   installOpen: boolean
@@ -688,6 +732,18 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
     await trackedInvoke("adopt_install", { path: target.path })
     await refreshInstalls()
   }, [installs, refreshInstalls])
+
+  const analyzeInstall = React.useCallback(
+    (path: string) =>
+      trackedInvoke<MigrationReport>("analyze_install", { path }),
+    []
+  )
+
+  const verifyAdminAccount = React.useCallback(
+    (username: string) =>
+      trackedInvoke<AdminVerifyResult>("verify_admin_account", { username }),
+    []
+  )
 
   React.useEffect(() => {
     void refreshInstalls()
@@ -1269,6 +1325,7 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
             adminPass: choices.adminPass,
             force: choices.force ?? false,
             resume: choices.resume ?? false,
+            migrate: choices.migrate ?? false,
             modules: choices.modules ?? [],
             moduleConfig: choices.moduleConfig ?? {},
           },
@@ -1425,6 +1482,8 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       detecting,
       refreshInstalls,
       adoptInstall,
+      analyzeInstall,
+      verifyAdminAccount,
       installOpen,
       setInstallOpen,
       openInstall: () => setInstallOpen(true),
@@ -1476,6 +1535,8 @@ export function ServerStateProvider({ children }: { children: React.ReactNode })
       detecting,
       refreshInstalls,
       adoptInstall,
+      analyzeInstall,
+      verifyAdminAccount,
       installOpen,
       installStatus,
       consoleState,

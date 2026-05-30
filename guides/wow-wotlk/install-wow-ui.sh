@@ -366,6 +366,226 @@ setup_eluna() {
 }
 
 # ─────────────────────────────────────────
+# PLAYERBOTS COMPOSE OVERRIDE
+# ─────────────────────────────────────────
+# Writes docker-compose.override.yml for a playerbots install. Shared by
+# the fresh-install path and the migrate path so they stay byte-compatible.
+#
+# $1 = "fresh" | "migrate"
+#   fresh   — first-ever compile. Sets CWITH_WARNINGS="OFF" to spare the
+#             user AzerothCore's -Wall/-Wextra warning flood. There are no
+#             cached objects to invalidate on a clean build, so the flag is
+#             free here.
+#   migrate — the server was already compiled once (manually). OMIT the
+#             CWITH_WARNINGS build arg so the compiler command line matches
+#             that original build EXACTLY. ccache keys on the full command
+#             line incl. warning flags; flipping them would miss every cache
+#             entry and force a full ~1.5h recompile. By omitting the arg we
+#             inherit the same default the manual install used, so ccache
+#             hits the entire already-built core + playerbots and only the
+#             newly-added mod-ale (+ any chosen modules) compiles fresh.
+write_playerbots_override() {
+    local mode="${1:-fresh}"
+    {
+        cat << 'TOP'
+services:
+  ac-worldserver:
+    build:
+      context: .
+      target: worldserver
+TOP
+        if [ "$mode" = "fresh" ]; then
+            cat << 'WARN'
+      args:
+        # Non-developer install — silence the -Wall/-Wextra warning flood.
+        # Documented acore-docker knob; defaults to "ON". (Omitted on
+        # migrate to keep ccache warm — see write_playerbots_override.)
+        CWITH_WARNINGS: "OFF"
+WARN
+        fi
+        cat << 'BOTTOM'
+    volumes:
+      - ./modules:/azerothcore/modules
+      # Lua scripts for mod-ale (Eluna). The dml_*.lua files in here are
+      # the only way to run things like `.playerbots addclass` AS the
+      # player from outside the game, which is how My Party spawns bots
+      # and how whisper-driven commands (talents, autogear) work.
+      # Without this mount the scripts inside the image are inert —
+      # `dml_addclass` etc. won't exist when SOAP tries to call them.
+      - ./lua_scripts:/azerothcore/env/dist/bin/lua_scripts
+    environment:
+      AC_PLAYERBOTS_UPDATES_ENABLE_DATABASES: "1"
+      AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
+      AC_AI_PLAYERBOT_MIN_RANDOM_BOTS: "50"
+      AC_AI_PLAYERBOT_MAX_RANDOM_BOTS: "200"
+      # SOAP is the long-term GM command channel for the UI. Enabled at
+      # install so the app can later issue commands like `additem`,
+      # `teleport`, `account set gmlevel`, etc. via HTTP+XML on port 7878
+      # using the ADMIN account bootstrap_accounts_and_ahbot creates.
+      # Without IP=0.0.0.0 SOAP binds to 127.0.0.1 INSIDE the container,
+      # unreachable from the host even though the port is published.
+      AC_SOAP_ENABLED: "1"
+      AC_SOAP_IP: "0.0.0.0"
+      # Tell mod-ale where to find the dml_*.lua scripts. Must be the
+      # CONTAINER-side path (it does relative resolution from /azerothcore,
+      # which won't match our lua_scripts mount otherwise).
+      AC_ALE_SCRIPT_PATH: "/azerothcore/env/dist/bin/lua_scripts"
+  ac-authserver:
+    build:
+      context: .
+      target: authserver
+  ac-db-import:
+    build:
+      context: .
+      target: db-import
+  ac-client-data-init:
+    build:
+      context: .
+      target: client-data
+BOTTOM
+    } > "$SERVER_DIR/docker-compose.override.yml"
+}
+
+# ─────────────────────────────────────────
+# COMPILE PLAYERBOTS WORLDSERVER
+# ─────────────────────────────────────────
+# `docker compose up -d --build` builds multiple images in one shot — the
+# playerbots-enabled worldserver and the smaller authserver / db-import /
+# client-data targets. Each is its own CMake invocation, so the percentage
+# marker `[ NN%]` resets between them. Without a transition the UI parks
+# them all under one collapsible with a confusingly-resetting bar.
+#
+# Filter the live stream through awk: pass every line through, and when the
+# percent drops sharply from "near done" back to "fresh start" (>= 80 →
+# < 10), emit a SECTION::END + new SECTION::START so the UI renders a clean
+# second collapsible for the next stage. `stdbuf -oL` forces line-buffered
+# awk output so the console doesn't lag the live build by 4KB chunks.
+#
+# Returns non-zero on build failure (caller decides whether to exit).
+compile_playerbots() {
+    print_info "Compiling Worldserver (with Playerbots) and Authserver..."
+    cd "$SERVER_DIR" || return 1
+    section_start "Docker build (1/2) — Worldserver + Playerbots"
+    docker compose up -d --build 2>&1 \
+        | tee "$HOME/playerbots-build.log" \
+        | stdbuf -oL awk '
+            BEGIN { last_pct = -1; stage_emitted = 0 }
+            {
+                print
+                if (match($0, /\[ *[0-9]+%\]/)) {
+                    pct_str = substr($0, RSTART, RLENGTH)
+                    gsub(/[^0-9]/, "", pct_str)
+                    pct = pct_str + 0
+                    if (last_pct >= 80 && pct < 10 && !stage_emitted) {
+                        print "::DML::SECTION::END::"
+                        print "::DML::SECTION::START::Docker build (2/2) — Authserver::"
+                        stage_emitted = 1
+                    }
+                    last_pct = pct
+                }
+            }'
+    # Capture compose exit code NOW — section_end runs commands and would
+    # clobber $PIPESTATUS. Index [0] is the docker compose process;
+    # tee/stdbuf/awk are downstream.
+    local build_rc=${PIPESTATUS[0]}
+    section_end
+    if [ "$build_rc" -ne 0 ]; then
+        print_error "Compilation failed. See ~/playerbots-build.log"
+        return 1
+    fi
+    return 0
+}
+
+# ─────────────────────────────────────────
+# MIGRATE AN EXISTING (MANUAL) INSTALL TO PARITY
+# ─────────────────────────────────────────
+# A user who set their server up by hand (install-wow.sh / install-wow-
+# wotlk.sh) has a working playerbots fork on disk but is missing the
+# Lab-specific bits: SOAP, the Eluna bridge scripts, the AHBot account, and
+# the install.json marker. Migrate fills exactly those gaps WITHOUT wiping
+# anything — their characters, accounts and data volumes are left intact.
+#
+# Entered via DML_MIGRATE=1; the UI only routes a buildable playerbots
+# source install here (analyze_install gates that), but we re-check anyway.
+migrate_existing_install() {
+    print_step "Migrating your server to The Lab"
+
+    if [ ! -d "$SERVER_DIR" ]; then
+        print_error "No install found at $SERVER_DIR — nothing to migrate."
+        exit 1
+    fi
+    # Only a buildable source tree can be migrated — SOAP + Eluna get
+    # compiled in via this Dockerfile. Prebuilt/base/npcbots stacks have
+    # nothing to rebuild; the UI shouldn't send them here, but guard.
+    if [ ! -f "$SERVER_DIR/apps/docker/Dockerfile" ]; then
+        print_error "$SERVER_DIR has no buildable source tree (apps/docker/Dockerfile)."
+        print_info  "This server can't be migrated in place — do a fresh Playerbots install instead."
+        exit 1
+    fi
+
+    # Back up the existing override before replacing it — never silently
+    # discard the user's customizations.
+    if [ -f "$SERVER_DIR/docker-compose.override.yml" ]; then
+        local bak="$SERVER_DIR/docker-compose.override.yml.pre-dml.$(date -u +%Y%m%d%H%M%S).bak"
+        if cp "$SERVER_DIR/docker-compose.override.yml" "$bak"; then
+            print_success "Backed up existing override → $(basename "$bak")"
+        fi
+    fi
+
+    # 1. Canonical override — adds SOAP + the lua_scripts mount + Eluna path.
+    #    "migrate" mode omits CWITH_WARNINGS so ccache stays warm (see
+    #    write_playerbots_override).
+    print_info "Updating compose override (adds SOAP + Eluna)..."
+    write_playerbots_override migrate
+    print_success "Compose override updated."
+
+    # 2. mod-playerbots must be present. These installs are playerbots forks
+    #    so it normally is, but a missing module dir would compile a botless
+    #    core — clone it if absent.
+    if [ ! -d "$SERVER_DIR/modules/mod-playerbots" ]; then
+        print_info "mod-playerbots missing — cloning..."
+        git clone --progress --depth 1 \
+            https://github.com/mod-playerbots/mod-playerbots.git \
+            --branch=master \
+            "$SERVER_DIR/modules/mod-playerbots" \
+            || print_warning "mod-playerbots clone failed — bots may be unavailable."
+    fi
+
+    # 3. Eluna (mod-ale) + dml_*.lua bridge. Idempotent: clones mod-ale only
+    #    if missing and refreshes all six scripts (fills the dml_summon_npc
+    #    gap older manual setup_eluna left out).
+    setup_eluna
+
+    # 4. Any modules the user opted into during the (cheap) recompile.
+    install_user_modules
+
+    # 5. Recompile. ccache makes this incremental — only mod-ale + any new
+    #    modules compile fresh, then a relink.
+    if ! compile_playerbots; then
+        print_error "Migration build failed — your server is unchanged. See ~/playerbots-build.log"
+        exit 1
+    fi
+
+    # 6. Server must be reachable before bootstrapping accounts.
+    if ! wait_for_server; then
+        exit 1
+    fi
+
+    # 7. Admin (adopt-or-create) + AHBOT + character + conf. create_account_
+    #    via_srp6 is idempotent: an existing admin account is reused untouched
+    #    (only GM level is granted), so adopting a hand-made account never
+    #    rewrites its password.
+    if ! bootstrap_accounts_and_ahbot; then
+        print_error "Account setup failed — see above. install.json NOT written; re-run to retry."
+        exit 1
+    fi
+
+    # 8. Mark complete. Tag build_method so the marker records provenance.
+    BUILD_METHOD="migrate"
+    write_metadata
+}
+
+# ─────────────────────────────────────────
 # RESOLVE INPUTS
 # ─────────────────────────────────────────
 SERVER_TYPE="${DML_SERVER_TYPE:-}"
@@ -794,57 +1014,7 @@ OVERRIDE
                 --branch=master \
                 "$SERVER_DIR/modules/mod-playerbots"
 
-            cat > "$SERVER_DIR/docker-compose.override.yml" << 'OVERRIDE'
-services:
-  ac-worldserver:
-    build:
-      context: .
-      target: worldserver
-      args:
-        # This is a non-developer install — turn OFF AzerothCore's
-        # -Wall/-Wextra warning flood (thousands of compiler warnings that
-        # alarm users for no reason). Documented acore-docker knob; defaults
-        # to "ON". Flip back to "ON" for development builds.
-        CWITH_WARNINGS: "OFF"
-    volumes:
-      - ./modules:/azerothcore/modules
-      # Lua scripts for mod-ale (Eluna). The dml_*.lua files in here are
-      # the only way to run things like `.playerbots addclass` AS the
-      # player from outside the game, which is how My Party spawns bots
-      # and how whisper-driven commands (talents, autogear) work.
-      # Without this mount the scripts inside the image are inert —
-      # `dml_addclass` etc. won't exist when SOAP tries to call them.
-      - ./lua_scripts:/azerothcore/env/dist/bin/lua_scripts
-    environment:
-      AC_PLAYERBOTS_UPDATES_ENABLE_DATABASES: "1"
-      AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
-      AC_AI_PLAYERBOT_MIN_RANDOM_BOTS: "50"
-      AC_AI_PLAYERBOT_MAX_RANDOM_BOTS: "200"
-      # SOAP is the long-term GM command channel for the UI. Enabled at
-      # install so the app can later issue commands like `additem`,
-      # `teleport`, `account set gmlevel`, etc. via HTTP+XML on port 7878
-      # using the ADMIN account bootstrap_accounts_and_ahbot creates.
-      # Without IP=0.0.0.0 SOAP binds to 127.0.0.1 INSIDE the container,
-      # unreachable from the host even though the port is published.
-      AC_SOAP_ENABLED: "1"
-      AC_SOAP_IP: "0.0.0.0"
-      # Tell mod-ale where to find the dml_*.lua scripts. Must be the
-      # CONTAINER-side path (it does relative resolution from /azerothcore,
-      # which won't match our lua_scripts mount otherwise).
-      AC_ALE_SCRIPT_PATH: "/azerothcore/env/dist/bin/lua_scripts"
-  ac-authserver:
-    build:
-      context: .
-      target: authserver
-  ac-db-import:
-    build:
-      context: .
-      target: db-import
-  ac-client-data-init:
-    build:
-      context: .
-      target: client-data
-OVERRIDE
+            write_playerbots_override fresh
 
             # Clone + configure user-selected modules BEFORE the build so
             # they get compiled into the same worldserver image. Free
@@ -859,51 +1029,7 @@ OVERRIDE
             # lua_scripts volume mount in the override binds to.
             setup_eluna
 
-            print_info "Compiling Worldserver (with Playerbots) and Authserver (approx 1.5 hrs)..."
-            cd "$SERVER_DIR" || exit 1
-            section_start "Docker build (1/2) — Worldserver + Playerbots"
-            # `docker compose up -d --build` builds multiple images in one
-            # shot — the playerbots-enabled worldserver and the smaller
-            # authserver / db-import / client-data targets. Each is its
-            # own CMake invocation, so the percentage marker `[ NN%]`
-            # resets between them. Without a transition the UI parks them
-            # all under one collapsible with a confusingly-resetting bar.
-            #
-            # Filter the live stream through awk: pass every line through,
-            # and when the percent drops sharply from "near done" back to
-            # "fresh start" (>= 80 → < 10), emit a SECTION::END followed
-            # by a new SECTION::START. The UI then renders a clean second
-            # collapsible labelled "Worldserver" for the next stage.
-            #
-            # `stdbuf -oL` forces line-buffered output on awk so the UI
-            # console doesn't lag the live build by 4KB-sized chunks.
-            docker compose up -d --build 2>&1 \
-                | tee "$HOME/playerbots-build.log" \
-                | stdbuf -oL awk '
-                    BEGIN { last_pct = -1; stage_emitted = 0 }
-                    {
-                        print
-                        if (match($0, /\[ *[0-9]+%\]/)) {
-                            pct_str = substr($0, RSTART, RLENGTH)
-                            gsub(/[^0-9]/, "", pct_str)
-                            pct = pct_str + 0
-                            if (last_pct >= 80 && pct < 10 && !stage_emitted) {
-                                print "::DML::SECTION::END::"
-                                print "::DML::SECTION::START::Docker build (2/2) — Authserver::"
-                                stage_emitted = 1
-                            }
-                            last_pct = pct
-                        }
-                    }'
-            # Capture compose exit code NOW — section_end runs commands
-            # and would clobber $PIPESTATUS. Index [0] is the docker
-            # compose process; tee/stdbuf/awk are downstream.
-            BUILD_RC=${PIPESTATUS[0]}
-            section_end
-            if [ "$BUILD_RC" -ne 0 ]; then
-                print_error "Compilation failed. See ~/playerbots-build.log"
-                exit 1
-            fi
+            compile_playerbots || exit 1
             print_success "Playerbots server compiled."
             ;;
     esac
@@ -1212,7 +1338,13 @@ print_info "Admin user:   ${DML_ADMIN_USER:-admin}"
 # Detection of the partial state happens UI-side: the dashboard shows a
 # "Finish setup" banner when install.json is missing, and clicking it
 # spawns this script with DML_RESUME=1.
-if [ "${DML_RESUME:-0}" = "1" ]; then
+if [ "${DML_MIGRATE:-0}" = "1" ]; then
+    # MIGRATE mode (DML_MIGRATE=1): adopt a working but hand-built server
+    # and bring it up to Lab parity (SOAP + Eluna + AHBot + marker) without
+    # wiping anything. Has its own internal wait/bootstrap/metadata steps and
+    # exits non-zero on failure, so just hand off to it.
+    migrate_existing_install
+elif [ "${DML_RESUME:-0}" = "1" ]; then
     print_info "Resume mode — skipping clone/compile, completing post-install setup..."
 
     # Bring the stack up before waiting. Resume gets entered when an

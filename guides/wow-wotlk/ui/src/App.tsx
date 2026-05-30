@@ -5,6 +5,11 @@ import { AhBotIntroOverlay } from "@/components/ahbot-intro-overlay"
 import { AutoShutdownAlertDialog } from "@/components/auto-shutdown-alert-dialog"
 import { CursorFactionProvider } from "@/components/cursor-faction-context"
 import { SplashScreen } from "@/components/splash-screen"
+import {
+  UpdatingScreen,
+  type MigrationStatus,
+} from "@/components/updating-screen"
+import { isTauri, trackedInvoke } from "@/lib/tauri"
 import { AppSidebar } from "@/components/app-sidebar"
 import { BotDetailScreen } from "@/components/bot-detail-screen"
 import { DashboardShell } from "@/components/dashboard-shell"
@@ -37,6 +42,45 @@ export default function App() {
   // with a 500ms fade). The app behind it mounts/renders in parallel,
   // so by the time the splash clears the UI is ready.
   const [splashDone, setSplashDone] = React.useState(false)
+
+  // Data-migration gate. On launch we ask the backend whether the new binary
+  // has pending local-data migrations (or a prior failure to surface). If so
+  // we take over the whole view with the Updating screen until it resolves;
+  // a fresh install / up-to-date user clears immediately. "checking" is a
+  // single fast IPC round-trip.
+  const [migration, setMigration] = React.useState<"checking" | "clear" | "active">(
+    isTauri() ? "checking" : "clear"
+  )
+  const [migStatus, setMigStatus] = React.useState<MigrationStatus | null>(null)
+  React.useEffect(() => {
+    if (!isTauri()) return
+    trackedInvoke<MigrationStatus>("migrations_status")
+      .then((s) => {
+        if (s.pending || s.failed) {
+          setMigStatus(s)
+          setMigration("active")
+        } else {
+          setMigration("clear")
+        }
+      })
+      .catch(() => setMigration("clear"))
+  }, [])
+
+  if (migration === "checking") return null
+  if (migration === "active" && migStatus) {
+    return (
+      <TooltipProvider>
+        <CursorFactionProvider>
+          <UpdatingScreen
+            initial={migStatus}
+            onComplete={() => setMigration("clear")}
+          />
+          <Toaster position="top-right" richColors closeButton />
+        </CursorFactionProvider>
+      </TooltipProvider>
+    )
+  }
+
   return (
     <TooltipProvider>
       {/* CursorFactionProvider wraps the entire tree so the Warcraft

@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dialog"
 import { Progress } from "@/components/ui/progress"
 import { LottieLoop } from "@/components/lottie-loop"
-import { isTauri } from "@/lib/tauri"
+import { isTauri, trackedInvoke } from "@/lib/tauri"
 import loadingAnimation from "@/assets/lottie/loadingV4.json"
 
 /**
@@ -75,6 +75,14 @@ export function UpdateChecker() {
     setDl("downloading")
     setPct(0)
     try {
+      // Stash a copy of the current AppImage before the updater overwrites
+      // it, so the new binary can roll back to it if its data migrations
+      // fail. Best-effort: a no-op outside an AppImage, never blocks update.
+      try {
+        await trackedInvoke("backup_current_binary")
+      } catch (e) {
+        console.warn("backup_current_binary failed (continuing):", e)
+      }
       let total = 0
       let got = 0
       await update.downloadAndInstall((ev) => {

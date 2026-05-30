@@ -12,6 +12,7 @@ import {
   tabPointsSpent,
 } from "@/lib/talent-trees"
 import { CLASS_COLORS, CLASS_NAMES } from "@/lib/wow-character-enums"
+import { SPEC_BACKGROUNDS } from "@/lib/talent-spec-backgrounds"
 import { cn } from "@/lib/utils"
 
 /**
@@ -126,16 +127,6 @@ function TalentTreeBody({
 
 // ── Column ─────────────────────────────────────────────────────────────
 
-const TAB_BACKGROUND_TINTS: Record<number, string> = {
-  // (tabIndex 0/1/2) — soft tint per tree for visual differentiation.
-  // Real client background art is punted; these gradients evoke the
-  // jungle / snow / forest themes Bliz used per tree without ripping
-  // the source textures.
-  0: "from-emerald-950/60 to-stone-900",
-  1: "from-slate-900 to-stone-900",
-  2: "from-teal-950/60 to-stone-900",
-}
-
 function TreeColumn({
   tab,
   classId,
@@ -151,17 +142,26 @@ function TreeColumn({
 }) {
   const cols = Math.max(gridColumns, tab.maxCol + 1)
   const rows = tab.maxRow + 1
+  const background = SPEC_BACKGROUNDS[tab.tabId]
 
   return (
-    <div
-      className={cn(
-        "flex flex-col bg-gradient-to-b",
-        TAB_BACKGROUND_TINTS[tab.tabIndex] ?? "from-stone-900 to-stone-900"
+    <div className="relative flex flex-col bg-stone-900">
+      {/* Spec background art (Wowhead), keyed by tabId. A darkening
+          overlay sits on top so the talent icons stay readable; the
+          header/grid render above both via z-10. */}
+      {background && (
+        <>
+          <div
+            className="pointer-events-none absolute inset-0 bg-cover bg-top opacity-40"
+            style={{ backgroundImage: `url(${background})` }}
+          />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/40 via-black/55 to-stone-950/85" />
+        </>
       )}
-    >
+
       {/* Tree header — name + crest + X/71. Sized to match the in-game
           tree header proportions (icon ~28px, name 14px, points 12px). */}
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-black/30 px-3 py-2">
+      <div className="relative z-10 flex items-center justify-between gap-2 border-b border-border/60 bg-black/30 px-3 py-2">
         <div className="flex items-center gap-2 min-w-0">
           {tab.iconName && (
             <img
@@ -183,7 +183,7 @@ function TreeColumn({
       {/* Grid — talents placed by (row, col). Empty cells are real
           empty space, just like the in-game tree. */}
       <div
-        className="grid gap-1.5 p-2"
+        className="relative z-10 grid gap-1.5 p-2"
         style={{
           gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
           gridTemplateRows: `repeat(${rows}, auto)`,

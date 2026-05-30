@@ -1,0 +1,54 @@
+# An example party that ships with The Lab. It's a normal preset — edit or
+# delete it however you like (deleting it won't bring it back).
+#
+# A complete, optimized group for level-80 endgame content. You play a DPS;
+# the bots cover every other role: a Protection Paladin tanks, a Restoration
+# Shaman heals (and brings Heroism/Bloodlust), and an Unholy Death Knight and
+# Frostfire Mage round out the damage. Talents are full level-80 raid builds.
+# Gear is equipped automatically when the bots are summoned.
+
+schema_version = 1
+
+[preset_info]
+name = "Level 80 Max Party"
+author = "The Lab"
+description = """
+A complete, optimized level-80 group. You play a DPS while the bots cover \
+the rest: a Protection Paladin tank, a Restoration Shaman healer (with \
+Heroism / Bloodlust), and an Unholy Death Knight plus a Frostfire Mage on \
+damage. Talents are full level-80 raid builds. Swap any class for an \
+equivalent — e.g. a Druid can tank or heal, and any strong DPS fits the \
+damage slots.\
+"""
+target = { type = "raid", name = "Level 80" }
+
+[party.player]
+role = "dps"
+
+[[party.bots]]
+role = "tank"
+class = "paladin"
+level = 80
+spec = "Protection"
+talents = "-05005135203102311333312321-502302012003"
+
+[[party.bots]]
+role = "healer"
+class = "shaman"
+level = 80
+spec = "Restoration"
+talents = "-00502033-50005331335310501122331251"
+
+[[party.bots]]
+role = "dps"
+class = "dk"
+level = 80
+spec = "Unholy"
+talents = "-320033500002-2301303050032151000150013133151"
+
+[[party.bots]]
+role = "dps"
+class = "mage"
+level = 80
+spec = "Frostfire"
+talents = "-2305032012303331053120321351-023302031"

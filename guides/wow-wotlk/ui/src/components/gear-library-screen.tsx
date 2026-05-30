@@ -56,7 +56,6 @@ import {
   buildGearSet,
   gearSetItems,
   type GearPiece,
-  type GearSet,
   type GearSetEntry,
 } from "@/lib/gear-sets"
 import { CLASS_COLORS, CLASS_NAMES } from "@/lib/wow-character-enums"

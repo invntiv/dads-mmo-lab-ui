@@ -65,6 +65,10 @@ pub struct PresetInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// Free-text notes from the preset author — why the build exists, how to
+    /// play it, caveats, alternatives. Shown on the preset card. Advisory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// ISO timestamp. Set by the frontend on save; advisory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -207,6 +211,99 @@ fn write_preset(dir: &PathBuf, id: &str, preset: &PartyPreset) -> Result<PresetE
         raw_toml: raw,
         preset: preset.clone(),
     })
+}
+
+// ── bundled example presets ──────────────────────────────────────────
+
+/// Example parties shipped with the app, embedded at compile time so
+/// there's no resource-path resolution to get wrong across dev vs. the
+/// bundled AppImage. Each entry is `(id, toml)`; the id becomes the
+/// `<id>.toml` filename and the preset's stable identity for seed
+/// tracking. Add a new example by dropping a file in
+/// `resources/party-presets/` and adding a line here.
+const EXAMPLE_PRESETS: &[(&str, &str)] = &[
+    (
+        "deadmines-healer",
+        include_str!("../resources/party-presets/deadmines-healer.toml"),
+    ),
+    (
+        "max-party-level-80",
+        include_str!("../resources/party-presets/max-party-level-80.toml"),
+    ),
+];
+
+/// Newline-separated list of example ids we've already seeded. Tracking
+/// per-id (rather than a single "seeded" flag) means: deleting an example
+/// makes the deletion stick (its id stays recorded, so we never re-add it),
+/// while a brand-new example shipped in a later version still seeds once.
+fn seeded_marker_path(dir: &PathBuf) -> PathBuf {
+    dir.join(".examples-seeded")
+}
+
+fn read_seeded_ids(dir: &PathBuf) -> std::collections::HashSet<String> {
+    let path = seeded_marker_path(dir);
+    fs::read_to_string(path)
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Copy any not-yet-seeded example preset into the user's library. Runs
+/// once-per-example: idempotent across launches, and a user's deletion of
+/// an example is permanent. Best-effort — a failure to seed an example is
+/// logged, never fatal to app startup. Validates that each embedded TOML
+/// parses before writing so a malformed example can't poison the library.
+pub fn seed_example_presets() {
+    let dir = match presets_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("seed_example_presets: {e}");
+            return;
+        }
+    };
+    let mut seeded = read_seeded_ids(&dir);
+    let mut changed = false;
+
+    for (id, body) in EXAMPLE_PRESETS {
+        if seeded.contains(*id) {
+            continue;
+        }
+        // Record the attempt regardless of the per-file outcome below so a
+        // user who later deletes the seeded copy doesn't get it back.
+        seeded.insert(id.to_string());
+        changed = true;
+
+        if let Err(e) = toml::from_str::<PartyPreset>(body) {
+            log::warn!("seed_example_presets: example {id} doesn't parse, skipping: {e}");
+            continue;
+        }
+        let path = dir.join(format!("{id}.toml"));
+        if path.exists() {
+            // The user already has a preset at this id — don't clobber it.
+            continue;
+        }
+        if let Err(e) = fs::write(&path, body) {
+            log::warn!("seed_example_presets: write {id}.toml: {e}");
+        } else {
+            log::info!("Seeded example party preset: {id}");
+        }
+    }
+
+    if changed {
+        let marker = seeded_marker_path(&dir);
+        let contents = {
+            let mut ids: Vec<&String> = seeded.iter().collect();
+            ids.sort();
+            ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
+        };
+        if let Err(e) = fs::write(&marker, contents) {
+            log::warn!("seed_example_presets: write marker: {e}");
+        }
+    }
 }
 
 // ── commands ─────────────────────────────────────────────────────────
@@ -587,6 +684,24 @@ fn normalize_talents(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_examples_parse() {
+        // The seeder skips an example that doesn't deserialize, which would
+        // silently ship a missing example. Fail the build instead.
+        for (id, body) in EXAMPLE_PRESETS {
+            let preset: PartyPreset = toml::from_str(body)
+                .unwrap_or_else(|e| panic!("example preset {id} failed to parse: {e}"));
+            assert!(
+                !preset.party.bots.is_empty(),
+                "example preset {id} has no bots"
+            );
+            assert!(
+                preset.party.player.is_some(),
+                "example preset {id} has no player slot"
+            );
+        }
+    }
 
     #[test]
     fn normalize_bare_string() {

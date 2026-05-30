@@ -34,6 +34,9 @@ export interface PresetTarget {
 export interface PresetInfo {
   name: string
   author?: string
+  /** Free-text author notes — rationale, how to play, caveats, alternatives.
+   *  Shown on the preset card. */
+  description?: string
   created_at?: string
   target: PresetTarget
 }

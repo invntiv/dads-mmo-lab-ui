@@ -8,6 +8,7 @@ import {
   HeartIcon,
   PencilSimpleIcon,
   PlayIcon,
+  RobotIcon,
   ShieldIcon,
   SwordIcon,
   TrashIcon,
@@ -20,6 +21,7 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ShineBorder } from "@/components/ui/shine-border"
 import {
   Dialog,
   DialogContent,
@@ -240,6 +242,25 @@ function RoleIcon({ role, className }: { role: string; className?: string }) {
   return <SwordIcon className={cn("text-rose-400", className)} weight="fill" />
 }
 
+/** "for TANKS" / "for HEALERS" / "for DPS" + the role's group-finder color
+ * (tank cyan, healer green, dps red) for the preset's player-role badge. */
+function playerRoleBadge(role: string): { label: string; className: string } {
+  if (role === "tank")
+    return {
+      label: "for TANKS",
+      className: "border-blue-400/50 text-blue-500 dark:text-blue-300",
+    }
+  if (role === "healer")
+    return {
+      label: "for HEALERS",
+      className: "border-emerald-400/50 text-emerald-600 dark:text-emerald-300",
+    }
+  return {
+    label: "for DPS",
+    className: "border-rose-400/50 text-rose-500 dark:text-rose-300",
+  }
+}
+
 // ── preset card ───────────────────────────────────────────────────────
 
 function PresetCard({
@@ -303,32 +324,50 @@ function PresetCard({
   }, [bots, meta])
 
   return (
-    <div className="rounded-md border border-border bg-card p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-base font-semibold">
+    <div className="group relative rounded-md border border-border bg-card p-4 shadow-sm transition-all hover:shadow-md">
+      <ShineBorder
+        className="opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        borderWidth={1.5}
+        duration={6}
+        shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
+      />
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate text-base font-semibold">
             {preset.preset_info.name}
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <Badge variant="secondary" className="font-normal">
-              {targetSummary(preset.preset_info.target)}
-            </Badge>
-            <span>
-              {bots.length} bot{bots.length === 1 ? "" : "s"}
+          </span>
+          {preset.preset_info.author && (
+            <span className="shrink-0 truncate text-xs text-muted-foreground">
+              by {preset.preset_info.author}
             </span>
-            {preset.preset_info.author && (
-              <span>· by {preset.preset_info.author}</span>
-            )}
-            {preset.party.player?.role && (
-              <span>· you: {preset.party.player.role}</span>
-            )}
-          </div>
+          )}
         </div>
-        <Button size="sm" onClick={onSetup} className="shrink-0">
-          <PlayIcon className="size-4" weight="fill" />
-          Set up
-        </Button>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <Badge variant="secondary" className="font-normal">
+            {targetSummary(preset.preset_info.target)}
+          </Badge>
+          <Badge variant="secondary" className="gap-1 font-normal">
+            <RobotIcon className="size-3.5" />×{bots.length}
+          </Badge>
+          {preset.party.player?.role && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "font-medium",
+                playerRoleBadge(preset.party.player.role).className
+              )}
+            >
+              {playerRoleBadge(preset.party.player.role).label}
+            </Badge>
+          )}
+        </div>
       </div>
+
+      {preset.preset_info.description && (
+        <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+          {preset.preset_info.description}
+        </p>
+      )}
 
       {/* Bot chips */}
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -337,7 +376,8 @@ function PresetCard({
         ))}
       </div>
 
-      <div className="mt-3 flex items-center gap-1.5">
+      <div className="mt-3 flex items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1.5">
         <Button
           variant="ghost"
           size="sm"
@@ -364,7 +404,7 @@ function PresetCard({
           }
         >
           <PencilSimpleIcon className="size-3.5" />
-          Edit
+          View/Edit
           {mismatchCount > 0 && (
             <WarningIcon className="size-3.5 text-amber-500" weight="fill" />
           )}
@@ -400,6 +440,11 @@ function PresetCard({
             Delete
           </Button>
         )}
+        </div>
+        <Button size="sm" onClick={onSetup} className="shrink-0">
+          <PlayIcon className="size-4" weight="fill" />
+          Set up
+        </Button>
       </div>
 
       <EditPresetDialog

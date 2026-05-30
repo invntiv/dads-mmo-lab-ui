@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils"
 
 type ServerType = "base" | "npcbots" | "playerbots"
 
-type ModuleKey =
+export type ModuleKey =
   | "mod-ah-bot-plus"
   | "mod-solocraft"
   | "mod-autobalance"
@@ -106,7 +106,7 @@ const DEFAULT_STATE: FormState = {
   adminPass: "admin",
 }
 
-const MODULES: {
+export const MODULES: {
   key: ModuleKey
   label: string
   blurb: string
@@ -419,7 +419,7 @@ function ServerTypeStep({
   )
 }
 
-function ModulesStep({
+export function ModulesStep({
   value,
   onChange,
 }: {

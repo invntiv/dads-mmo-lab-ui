@@ -120,7 +120,7 @@ export function ServerActionGroup() {
     (worldserverStatus === "running" || worldserverStatus === "crashed")
 
   return (
-    <SidebarGroup>
+    <SidebarGroup className="px-2 pt-1 pb-1.5">
       <SidebarGroupContent>
         <SidebarMenu>
           <SidebarMenuItem className="flex items-center gap-2">
@@ -142,7 +142,7 @@ export function ServerActionGroup() {
             )}
           </SidebarMenuItem>
           {installed && (
-            <SidebarMenuItem className="mt-2">
+            <SidebarMenuItem className="mt-1">
               <AutoShutdownToggle worldserverStatus={worldserverStatus} />
             </SidebarMenuItem>
           )}

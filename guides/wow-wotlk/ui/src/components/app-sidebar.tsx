@@ -82,8 +82,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       {/* Static header: logo + the server action button stay put while the
-          nav below scrolls. */}
-      <SidebarHeader>
+          nav below scrolls. Tight vertical padding — the logo button
+          already carries its own. */}
+      <SidebarHeader className="gap-1 pt-1 pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
@@ -105,8 +106,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarContent>
 
       {/* Static footer: Settings/More/Quit, then the character switcher. */}
-      <SidebarFooter>
-        <NavSecondary />
+      <SidebarFooter className="gap-1 pt-1 pb-2">
+        <NavSecondary className="py-0.5" />
         <CharacterSwitcher />
       </SidebarFooter>
     </Sidebar>

@@ -78,6 +78,7 @@ export function NavSecondary({
           <SidebarMenuItem>
             <PreInstallTooltip show={!installed}>
               <SidebarMenuButton
+                size="sm"
                 onClick={() => setActivePage("settings")}
                 isActive={activePage === "settings"}
                 disabled={!installed}
@@ -93,7 +94,7 @@ export function NavSecondary({
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton tooltip="More" className="relative">
+                <SidebarMenuButton size="sm" tooltip="More" className="relative">
                   <DotsThreeOutlineIcon />
                   <span>More</span>
                   {steamosUpdatePending && (
@@ -157,6 +158,7 @@ export function NavSecondary({
           {/* Quit — always available (fullscreen has no titlebar close) */}
           <SidebarMenuItem>
             <SidebarMenuButton
+              size="sm"
               onClick={() => void handleQuit()}
               tooltip="Quit"
               className="text-muted-foreground hover:bg-red-500/10 hover:text-red-500"

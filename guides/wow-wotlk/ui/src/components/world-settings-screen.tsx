@@ -11,6 +11,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { isTauri, trackedInvoke } from "@/lib/tauri"
 import { cn } from "@/lib/utils"
 
@@ -27,22 +28,29 @@ interface WorldSettings {
   dropMoney: number
   reputation: number
   honor: number
+  monsterDamage: number
+  monsterHealth: number
+  loot: number
+  restedXp: number
+  moveSpeed: number
+  crossFaction: boolean
 }
 
 type FieldKey = keyof WorldSettings
 
-const GROUPS: {
-  title: string
-  blurb: string
-  fields: { key: FieldKey; label: string; help: string }[]
-}[] = [
+type Field =
+  | { kind: "rate"; key: FieldKey; label: string; help: string }
+  | { kind: "toggle"; key: FieldKey; label: string; help: string }
+
+const GROUPS: { title: string; blurb: string; fields: Field[] }[] = [
   {
     title: "Experience",
     blurb: "How fast characters level up.",
     fields: [
-      { key: "xpKill", label: "Kill XP", help: "XP from killing monsters" },
-      { key: "xpQuest", label: "Quest XP", help: "XP from completing quests" },
+      { kind: "rate", key: "xpKill", label: "Kill XP", help: "XP from killing monsters" },
+      { kind: "rate", key: "xpQuest", label: "Quest XP", help: "XP from completing quests" },
       {
+        kind: "rate",
         key: "xpExplore",
         label: "Exploration XP",
         help: "XP from discovering new areas",
@@ -53,9 +61,57 @@ const GROUPS: {
     title: "Rewards",
     blurb: "Loot, reputation, and PvP gains.",
     fields: [
-      { key: "dropMoney", label: "Gold drops", help: "Money dropped by monsters" },
-      { key: "reputation", label: "Reputation", help: "Reputation gained" },
-      { key: "honor", label: "Honor", help: "Honor from PvP" },
+      { kind: "rate", key: "dropMoney", label: "Gold drops", help: "Money dropped by monsters" },
+      { kind: "rate", key: "reputation", label: "Reputation", help: "Reputation gained" },
+      { kind: "rate", key: "honor", label: "Honor", help: "Honor from PvP" },
+    ],
+  },
+  {
+    title: "Difficulty",
+    blurb: "Scale the challenge — affects normal mobs, elites, and bosses.",
+    fields: [
+      {
+        kind: "rate",
+        key: "monsterDamage",
+        label: "Monster damage",
+        help: "Damage monsters deal (melee + spells, all tiers)",
+      },
+      {
+        kind: "rate",
+        key: "monsterHealth",
+        label: "Monster health",
+        help: "Monster HP (all tiers)",
+      },
+      {
+        kind: "rate",
+        key: "loot",
+        label: "Loot drops",
+        help: "Item drop chance across all qualities",
+      },
+    ],
+  },
+  {
+    title: "Quality of life",
+    blurb: "Convenience tweaks.",
+    fields: [
+      {
+        kind: "rate",
+        key: "restedXp",
+        label: "Rested XP",
+        help: "How fast rested (bonus) XP accrues",
+      },
+      {
+        kind: "rate",
+        key: "moveSpeed",
+        label: "Movement speed",
+        help: "Player run/travel speed",
+      },
+      {
+        kind: "toggle",
+        key: "crossFaction",
+        label: "Cross-faction play",
+        help: "Let Alliance and Horde group, chat, trade, and use the same auction house",
+      },
     ],
   },
 ]
@@ -97,7 +153,7 @@ export function WorldSettingsScreen() {
     loaded != null &&
     (Object.keys(settings) as FieldKey[]).some((k) => settings[k] !== loaded[k])
 
-  const setField = (key: FieldKey, value: number) =>
+  const setField = (key: FieldKey, value: number | boolean) =>
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev))
 
   const setAllXp = (mult: number) =>
@@ -196,21 +252,36 @@ export function WorldSettingsScreen() {
                     <Label htmlFor={`ws-${f.key}`} title={f.help}>
                       {f.label}
                     </Label>
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        id={`ws-${f.key}`}
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={settings[f.key]}
-                        onChange={(e) => {
-                          const n = Number(e.target.value)
-                          if (Number.isFinite(n)) setField(f.key, Math.max(0, n))
-                        }}
-                        className="w-24 text-right font-mono tabular-nums"
-                      />
-                      <span className="text-xs text-muted-foreground">×</span>
-                    </div>
+                    {f.kind === "toggle" ? (
+                      <div className="flex h-8 items-center gap-2">
+                        <Switch
+                          id={`ws-${f.key}`}
+                          checked={settings[f.key] as boolean}
+                          onCheckedChange={(c) => setField(f.key, c)}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          {settings[f.key] ? "On" : "Off"}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          id={`ws-${f.key}`}
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={settings[f.key] as number}
+                          onChange={(e) => {
+                            const n = Number(e.target.value)
+                            if (Number.isFinite(n)) setField(f.key, Math.max(0, n))
+                          }}
+                          className="w-24 text-right font-mono tabular-nums"
+                        />
+                        <span className="text-lg font-medium text-muted-foreground">
+                          ×
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

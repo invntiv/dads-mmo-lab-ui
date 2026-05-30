@@ -44,11 +44,6 @@ import {
 import { LottieLoop } from "@/components/lottie-loop"
 import { PreInstallTooltip } from "@/components/pre-install-tooltip"
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import {
   useServerState,
   type ActivePage,
 } from "@/components/server-state-context"

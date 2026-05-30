@@ -207,6 +207,9 @@ export function GearLibraryScreen() {
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <SwordIcon className="size-6 text-primary" weight="fill" />
             Gear Library
+            <span className="text-sm font-medium text-orange-500">
+              [EXPERIMENTAL]
+            </span>
           </h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
             Save and share gear sets for your character. Reference loadouts —

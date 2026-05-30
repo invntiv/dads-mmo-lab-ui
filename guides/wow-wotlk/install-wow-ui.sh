@@ -101,6 +101,7 @@ declare -a USER_MODULE_REGISTRY=(
     "mod-autobalance|https://github.com/azerothcore/mod-autobalance.git"
     "mod-transmog|https://github.com/azerothcore/mod-transmog.git"
     "mod-1v1-arena|https://github.com/azerothcore/mod-1v1-arena.git"
+    "mod-npc-enchanter|https://github.com/azerothcore/mod-npc-enchanter.git"
 )
 
 # Look up a module URL by key. Returns empty string if not found —

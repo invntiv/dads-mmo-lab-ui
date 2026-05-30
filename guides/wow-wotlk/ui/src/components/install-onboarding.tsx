@@ -7,6 +7,7 @@ import {
   CoinsIcon,
   EyeIcon,
   EyeSlashIcon,
+  MagicWandIcon,
   PaletteIcon,
   ScalesIcon,
   StackIcon,
@@ -36,6 +37,7 @@ type ModuleKey =
   | "mod-1v1-arena"
   | "mod-aoe-loot"
   | "mod-learn-spells"
+  | "mod-npc-enchanter"
 
 // Per-module config shapes. Only ahbot and ip have onboarding-worthy
 // knobs (see MODULES_PLAN.md Phase 1) — every other module is a
@@ -76,6 +78,7 @@ const DEFAULT_STATE: FormState = {
     "mod-1v1-arena": false,
     "mod-aoe-loot": false,
     "mod-learn-spells": false,
+    "mod-npc-enchanter": true,
   },
   // Defaults pulled from mod_ahbot.conf.dist (see MODULES_PLAN.md §Phase 1),
   // with two overrides that match the offline single-player use case
@@ -113,6 +116,7 @@ const MODULES: {
   { key: "mod-solocraft", label: "Solocraft", blurb: "Scales dungeons and raids down to a single player.", Icon: UserIcon },
   { key: "mod-autobalance", label: "Auto Balance", blurb: "Dynamic difficulty based on party size and gear.", Icon: ScalesIcon },
   { key: "mod-transmog", label: "Transmogrification", blurb: "Change the appearance of your gear.", Icon: PaletteIcon },
+  { key: "mod-npc-enchanter", label: "NPC Enchanter", blurb: "An NPC that applies enchants to your gear — no enchanter alt needed.", Icon: MagicWandIcon },
   { key: "mod-individual-progression", label: "Individual Progression", blurb: "Vanilla → TBC → WotLK gating per character.", Icon: StackIcon },
   { key: "mod-1v1-arena", label: "1v1 Arena", blurb: "Solo arena queues.", Icon: SwordIcon },
   { key: "mod-aoe-loot", label: "AoE Loot", blurb: "Loot all nearby corpses with one click.", Icon: CoinsIcon },

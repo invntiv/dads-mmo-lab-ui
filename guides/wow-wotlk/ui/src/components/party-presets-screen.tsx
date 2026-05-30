@@ -137,6 +137,9 @@ export function PartyPresetsScreen() {
           <h1 className="flex items-center gap-2 text-xl font-semibold">
             <UsersThreeIcon className="size-6 text-primary" weight="fill" />
             Party Presets
+            <span className="text-sm font-medium text-orange-500">
+              [EXPERIMENTAL]
+            </span>
           </h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
             Save party setups and rebuild them in one click — or import a

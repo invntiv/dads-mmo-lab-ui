@@ -52,7 +52,7 @@ function buildNavNodes(_ahbotNeedsConfig: boolean): NavNode[] {
       items: [
         // Routed internally as `inventory`; display name is "Item Database".
         { title: "Item Database", icon: <DatabaseIcon />, page: "inventory" },
-        { title: "Gear Library", icon: <SwordIcon />, page: "gearLibrary" },
+        { title: "Gear Library", icon: <SwordIcon />, page: "gearLibrary", experimental: true },
         { title: "Auction House", icon: <GavelIcon />, page: "auctionHouse" },
       ],
     },
@@ -66,6 +66,7 @@ function buildNavNodes(_ahbotNeedsConfig: boolean): NavNode[] {
           title: "Party Presets",
           icon: <UsersThreeIcon />,
           page: "partyPresets",
+          experimental: true,
         },
       ],
     },

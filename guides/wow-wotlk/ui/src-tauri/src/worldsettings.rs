@@ -217,13 +217,17 @@ fn first_db_container() -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Look up the mod-transmog NPC's creature entry by name. Returns None
-/// when mod-transmog isn't installed (no matching creature_template row).
+/// Look up the mod-transmog NPC's creature entry. The mod ships it as
+/// entry 190010 (named "Warpweaver") — per its SQL + the catalogue
+/// (`.npc add 190010`), NOT a "transmog"-named row — so we match that
+/// exact entry first and only fall back to a name search if a fork
+/// renumbered it. Returns None when mod-transmog isn't installed.
 fn find_transmog_entry() -> Option<u32> {
     let container = first_db_container()?;
     let sql = "SELECT entry FROM acore_world.creature_template \
-               WHERE name LIKE '%ransmog%' OR name LIKE '%Transmogrif%' \
-               ORDER BY entry LIMIT 1;";
+               WHERE entry = 190010 \
+                  OR name LIKE '%Warpweaver%' OR name LIKE '%ransmog%' \
+               ORDER BY (entry = 190010) DESC, entry LIMIT 1;";
     let out = std::process::Command::new("docker")
         .args([
             "exec", &container, "mysql", "-uroot", "-ppassword", "-N", "-B", "-e", sql,

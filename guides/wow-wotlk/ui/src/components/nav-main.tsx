@@ -26,6 +26,7 @@ import {
 import {
   ArrowClockwiseIcon,
   ArrowRightIcon,
+  BarricadeIcon,
   CaretDownIcon,
   CaretRightIcon,
   FloppyDiskBackIcon,
@@ -42,6 +43,11 @@ import {
 } from "@/components/ui/tooltip"
 import { LottieLoop } from "@/components/lottie-loop"
 import { PreInstallTooltip } from "@/components/pre-install-tooltip"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import {
   useServerState,
   type ActivePage,
@@ -68,6 +74,9 @@ export type NavEntry = {
   notify?: boolean
   /** Overrides the default tooltip (which is the title). */
   tooltip?: string
+  /** Marks the feature as experimental — draws an orange barricade on
+   * the right with an "EXPERIMENTAL" hover tooltip. */
+  experimental?: boolean
 }
 
 /**
@@ -364,6 +373,22 @@ function NavGroup({
                     >
                       {sub.icon}
                       <span>{sub.title}</span>
+                      {sub.experimental && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="ml-auto inline-flex"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <BarricadeIcon
+                                className="size-4 text-orange-500"
+                                weight="fill"
+                              />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>EXPERIMENTAL</TooltipContent>
+                        </Tooltip>
+                      )}
                     </SidebarMenuSubButton>
                   </PreInstallTooltip>
                 </SidebarMenuSubItem>

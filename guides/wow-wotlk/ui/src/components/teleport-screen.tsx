@@ -10,6 +10,11 @@ import {
 } from "@phosphor-icons/react"
 
 import { Button } from "@/components/ui/button"
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
 import { ScrollFade, useCanScrollDown } from "@/components/ui/scroll-fade"
 import { ShineBorder } from "@/components/ui/shine-border"
@@ -42,6 +47,78 @@ type TeleportLocation = {
   x: number
   y: number
   z: number
+}
+
+/**
+ * `game_tele.name` is PascalCase with no spaces ("AddlesStead"). There's
+ * no friendly display column, so we derive one by splitting on case
+ * boundaries → "Addles Stead". Acronym-then-word ("Ek...") is handled by
+ * the second replace.
+ */
+function prettyLocationName(name: string): string {
+  return name
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim()
+}
+
+/** Readable continent name for a map id; instance maps (the "other"
+ *  tab) collapse to a generic label since we don't carry per-instance
+ *  names. */
+function mapName(map: number): string {
+  switch (map) {
+    case 0:
+      return "Eastern Kingdoms"
+    case 1:
+      return "Kalimdor"
+    case 530:
+      return "Outland"
+    case 571:
+      return "Northrend"
+    default:
+      return "Dungeon / Raid"
+  }
+}
+
+/**
+ * Wowhead-style hover tooltip for a teleport location — treats the
+ * location like an "item": tan name (heirloom gold), yellow map line,
+ * white coordinates. Same dark beveled frame as the item tooltip so the
+ * app reads consistently. Wraps the card's info area; the Tele / favorite
+ * buttons stay outside the trigger so they remain clickable.
+ */
+function LocationTooltip({
+  loc,
+  children,
+}: {
+  loc: TeleportLocation
+  children: React.ReactNode
+}) {
+  return (
+    <HoverCard openDelay={150} closeDelay={80}>
+      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="start"
+        className={cn(
+          "w-auto max-w-[320px] rounded-md border border-[#9a9aaa]/70 bg-[#070712]/95 p-3 text-[12.5px] leading-snug text-white backdrop-blur",
+          "shadow-[inset_0_0_0_1px_rgba(0,0,0,0.7),0_8px_24px_rgba(0,0,0,0.7)]"
+        )}
+      >
+        <div className="space-y-0.5">
+          <div className="text-[14px] font-semibold leading-tight text-[#e6cc80]">
+            {prettyLocationName(loc.name)}
+          </div>
+          <div className="text-[#ffd200]">{mapName(loc.map)}</div>
+          <div className="whitespace-nowrap text-white/90">
+            Map {loc.map} • {loc.x.toFixed(0)}, {loc.y.toFixed(0)},{" "}
+            {loc.z.toFixed(0)}
+          </div>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  )
 }
 
 const CONTINENTS: { id: string; label: string; mapIds: number[] | "other" }[] = [
@@ -189,7 +266,10 @@ export function TeleportScreen() {
     }
     const q = search.trim().toLowerCase()
     return locations.filter(
-      (l) => matchesContinent(l) && (q === "" || l.name.toLowerCase().includes(q))
+      (l) =>
+        matchesContinent(l) &&
+        (q === "" ||
+          `${l.name} ${prettyLocationName(l.name)}`.toLowerCase().includes(q))
     )
   }, [locations, activeContinent, search])
 
@@ -444,7 +524,7 @@ function FavoritesStrip({
                 disabled={busy}
                 className="font-medium hover:text-amber-700 dark:hover:text-amber-400 disabled:opacity-50"
               >
-                {loc.name}
+                {prettyLocationName(loc.name)}
               </button>
               <button
                 type="button"
@@ -484,14 +564,16 @@ function LocationTile({
         shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
       />
       <MapPinIcon className="size-4 shrink-0 text-muted-foreground" />
-      <div className="flex-1 min-w-0">
-        <div className="truncate text-sm font-medium leading-tight">
-          {loc.name}
+      <LocationTooltip loc={loc}>
+        <div className="min-w-0 flex-1 cursor-default">
+          <div className="truncate text-sm font-medium leading-tight">
+            {prettyLocationName(loc.name)}
+          </div>
+          <div className="truncate font-mono text-[10px] text-muted-foreground">
+            map {loc.map} · {loc.x.toFixed(0)}, {loc.y.toFixed(0)}, {loc.z.toFixed(0)}
+          </div>
         </div>
-        <div className="truncate font-mono text-[10px] text-muted-foreground">
-          map {loc.map} · {loc.x.toFixed(0)}, {loc.y.toFixed(0)}, {loc.z.toFixed(0)}
-        </div>
-      </div>
+      </LocationTooltip>
       <button
         type="button"
         onClick={() => onToggleFavorite(loc.id)}

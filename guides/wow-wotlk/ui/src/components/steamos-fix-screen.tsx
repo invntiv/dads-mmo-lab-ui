@@ -157,8 +157,17 @@ function logReducer(state: LogState, action: LogAction): LogState {
 }
 
 export function SteamosFixScreen() {
-  const { setActivePage } = useServerState()
+  const { setActivePage, refreshServerStatus } = useServerState()
   const { status, refresh } = useSteamOsStatus()
+  // pkexec has no password prompt under gamescope (Gaming Mode), so the
+  // fix can only run from Desktop Mode — gate the button on it.
+  const [gamingMode, setGamingMode] = React.useState(false)
+  React.useEffect(() => {
+    if (!isTauri()) return
+    void trackedInvoke<boolean>("is_gaming_mode")
+      .then(setGamingMode)
+      .catch(() => {})
+  }, [])
   const [phase, setPhase] = React.useState<Phase>("idle")
   const [confirming, setConfirming] = React.useState(false)
   const [result, setResult] = React.useState<{
@@ -222,6 +231,9 @@ export function SteamosFixScreen() {
       cleanup()
       // Refresh status so the sidebar badge clears on success.
       void refresh()
+      // The fix bounces the server (compose down → up), so the sidebar's
+      // Start/Stop button is stale — re-poll worldserver status.
+      if (e.payload.success) void refreshServerStatus()
     })
     unlisteners.push(doneUn)
 
@@ -242,7 +254,7 @@ export function SteamosFixScreen() {
       runningRef.current = false
       cleanup()
     }
-  }, [refresh])
+  }, [refresh, refreshServerStatus])
 
   // Tear down listeners if the user navigates away mid-run.
   React.useEffect(() => {
@@ -292,19 +304,31 @@ export function SteamosFixScreen() {
             </ul>
           </div>
 
-          <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            <WarningIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+          <div
+            className={cn(
+              "flex items-start gap-2 rounded-md border p-3 text-xs",
+              gamingMode
+                ? "border-rose-500/30 bg-rose-500/5 text-rose-700 dark:text-rose-400"
+                : "border-border bg-muted/30 text-muted-foreground"
+            )}
+          >
+            <WarningIcon
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                gamingMode ? "" : "text-amber-500"
+              )}
+            />
             <div>
               This rebuilds the pacman keyring (any custom keys you added
               manually are removed) and asks for your system password. On a
               Steam Deck this needs <span className="font-medium">Desktop
-              Mode</span> — Gaming Mode has no password prompt.
+              Mode</span> because Gaming Mode has no password prompt.
             </div>
           </div>
 
           {confirming ? (
             <div className="flex items-center gap-2">
-              <Button onClick={() => void startRun()}>
+              <Button onClick={() => void startRun()} disabled={gamingMode}>
                 <WrenchIcon className="size-4" weight="fill" />
                 Yes, run the fix
               </Button>
@@ -313,7 +337,15 @@ export function SteamosFixScreen() {
               </Button>
             </div>
           ) : (
-            <Button onClick={() => setConfirming(true)}>
+            <Button
+              onClick={() => setConfirming(true)}
+              disabled={gamingMode}
+              title={
+                gamingMode
+                  ? "Switch to Desktop Mode to run the fix"
+                  : undefined
+              }
+            >
               <WrenchIcon className="size-4" weight="fill" />
               Run the fix
             </Button>
@@ -373,7 +405,7 @@ export function SteamosFixScreen() {
                   Back to dashboard
                 </Button>
                 {!result?.success && (
-                  <Button onClick={() => void startRun()}>
+                  <Button onClick={() => void startRun()} disabled={gamingMode}>
                     <WrenchIcon className="size-4" weight="fill" />
                     Try again
                   </Button>

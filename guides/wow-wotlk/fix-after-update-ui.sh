@@ -31,10 +31,15 @@ NC='\033[0m'
 
 USER_HOME="${1:-$HOME}"
 
+# The Tauri console strips ANSI colour but renders emoji. We only use
+# emoji-default codepoints (Emoji_Presentation=Yes) so they reliably draw
+# in colour from the system emoji font — unlike ℹ️/⚠️, which are text
+# symbols + a variation selector and fell back to a tiny monochrome glyph
+# (the "i" / outline triangle) in the WebKit monospace font.
 print_success() { echo -e "${GREEN}✅ $1${NC}"; }
-print_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 print_error()   { echo -e "${RED}❌ $1${NC}"; }
-print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_info()    { echo -e "${BLUE}💡 $1${NC}"; }
+print_warning() { echo -e "${YELLOW}🚨 $1${NC}"; }
 
 # Sentinels parsed by Tauri's forward_lines into collapsible sections.
 section_start() { echo "::DML::SECTION::START::$1::"; }

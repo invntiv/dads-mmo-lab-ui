@@ -111,6 +111,18 @@ pub fn steamos_status() -> SteamOsStatus {
     }
 }
 
+/// True when running under gamescope (Steam Deck Gaming Mode). Mirrors
+/// the detection in `lib.rs` setup(). pkexec has no PolicyKit agent in
+/// Gaming Mode, so the SteamOS fix can only get a password prompt from
+/// Desktop Mode — the UI uses this to gate the "Run the fix" button.
+#[tauri::command]
+pub fn is_gaming_mode() -> bool {
+    std::env::var("GAMESCOPE_WAYLAND_DISPLAY").is_ok()
+        || std::env::var("XDG_CURRENT_DESKTOP")
+            .map(|v| v.eq_ignore_ascii_case("gamescope"))
+            .unwrap_or(false)
+}
+
 /// Record the current OS version as the acknowledged baseline. Clears the
 /// "update pending" flag. Called after a successful fix run, or when the
 /// user dismisses the prompt without running it.

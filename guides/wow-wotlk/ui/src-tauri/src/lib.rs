@@ -144,6 +144,7 @@ pub fn run() {
             gearsets::export_gear_set_toml,
             gearsets::import_gear_set_toml,
             steamos::steamos_status,
+            steamos::is_gaming_mode,
             steamos::acknowledge_steamos_version,
             steamos::run_steamos_fix,
             worldsettings::get_world_settings,

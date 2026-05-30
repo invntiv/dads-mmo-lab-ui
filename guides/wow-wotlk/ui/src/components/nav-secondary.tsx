@@ -146,7 +146,11 @@ export function NavSecondary({
                   </a>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <a href="#">
+                  <a
+                    href="https://www.patreon.com/c/0xV31l"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     <TipJarIcon className="text-muted-foreground" />
                     <span>Support Us</span>
                   </a>
